@@ -2,12 +2,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # ── OpenRouter (multi-key, takes priority when set) ──────
+    openrouter_api_keys: str | None = None   # comma-separated OR keys
+    openrouter_model: str = "google/gemma-3-27b-it:free"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
+    # ── Legacy single-key OpenAI-compatible backend ──────────
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"
+
+    # ── Storage ──────────────────────────────────────────────
     database_url: str = "sqlite:///./veronica.db"
     redis_url: str | None = None
     vector_database_url: str | None = None
+
+    # ── App ──────────────────────────────────────────────────
     app_name: str = "VERONICA"
     log_level: str = "INFO"
 
@@ -16,6 +26,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def openrouter_keys_list(self) -> list[str]:
+        if not self.openrouter_api_keys:
+            return []
+        return [k.strip() for k in self.openrouter_api_keys.split(",") if k.strip()]
 
 
 settings = Settings()

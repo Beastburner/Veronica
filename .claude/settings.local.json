@@ -59,7 +59,10 @@
       "Bash(./.venv/Scripts/python.exe -m pip install python-multipart -q)",
       "Bash(./.venv/Scripts/python.exe *)",
       "PowerShell(Stop-Process *)",
-      "Bash(echo \"TSC_EXIT=$?\")"
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(python -c ')",
+      "Bash(python -c ' *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k: d[k] for k in ['scripts','devDependencies'] if k in d}, indent=2\\)\\)\")"
     ]
   }
 }

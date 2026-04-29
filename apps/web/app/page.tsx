@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Activity, Bell, BrainCircuit, Code2, Shield, TerminalSquare } from "lucide-react";
+import { Activity, AlertTriangle, Bell, BrainCircuit, Code2, Shield, TerminalSquare } from "lucide-react";
 import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { ArcCore } from "@/components/ArcCore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -21,7 +21,7 @@ function fade(delayMs: number = 0) {
   return {
     initial: { opacity: 0, y: 8 },
     animate: { opacity: 1, y: 0 },
-    transition: { delay: delayMs / 1000, duration: 0.4 },
+    transition: { delay: delayMs / 1000, duration: 0.4, ease: "easeOut" },
   };
 }
 
@@ -36,8 +36,8 @@ type Message = {
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const modes: Array<{ id: Mode; label: string; detail: string }> = [
-  { id: "JARVIS", label: "JARVIS", detail: "General intelligence" },
-  { id: "FRIDAY", label: "FRIDAY", detail: "Productivity control" },
+  { id: "JARVIS",   label: "JARVIS",   detail: "General intelligence" },
+  { id: "FRIDAY",   label: "FRIDAY",   detail: "Productivity control" },
   { id: "VERONICA", label: "VERONICA", detail: "Problem response" },
   { id: "SENTINEL", label: "SENTINEL", detail: "Security watch" },
 ];
@@ -54,9 +54,23 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("JARVIS");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [chatLatency, setChatLatency] = useState<number | null>(null);
-  const sessionId = useRef(
-    typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `veronica-${Date.now()}`
+  const sessionId = useRef<string>(
+    (() => {
+      if (typeof window !== "undefined") {
+        const stored = window.localStorage.getItem("veronica-session-id");
+        if (stored) return stored;
+      }
+      const newId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `veronica-${Date.now()}`;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("veronica-session-id", newId);
+      }
+      return newId;
+    })()
   );
 
   const { items: messages, add: addMessage, replace: replaceMessages } = useMemoryEfficientState<Message>(
@@ -78,7 +92,7 @@ export default function Home() {
   const telemetry = useTelemetry(10_000);
 
   const activeBriefing = useMemo(() => {
-    if (mode === "FRIDAY") return "Productivity routing active. Calendar, reminders, planning, drafting are prioritized.";
+    if (mode === "FRIDAY")   return "Productivity routing active. Calendar, reminders, planning, drafting are prioritized.";
     if (mode === "VERONICA") return "Emergency reasoning active. Simulation, risk ranking, decisive recommendations are prioritized.";
     if (mode === "SENTINEL") return "Security monitoring active. Permissions, secrets, suspicious actions are under review.";
     return "General intelligence active. Context, tools, concise technical guidance are prioritized.";
@@ -144,12 +158,16 @@ export default function Home() {
                 if (parsed.protocol) {
                   setNotifications((n) => [`Protocol engaged: ${parsed.protocol}`, ...n].slice(0, 5));
                 }
-                if (parsed.provider_status && parsed.provider_status !== "ok" && !String(parsed.provider_status).startsWith("direct")) {
+                if (
+                  parsed.provider_status &&
+                  parsed.provider_status !== "ok" &&
+                  !String(parsed.provider_status).startsWith("direct")
+                ) {
                   setNotifications((n) => [`Model status: ${parsed.provider_status}`, ...n].slice(0, 5));
                 }
               }
             } catch {
-              /* skip */
+              /* skip malformed SSE lines */
             }
           }
         };
@@ -189,7 +207,8 @@ export default function Home() {
   }
 
   const modeKey = mode.toLowerCase();
-  const offline = !telemetry.online;
+  const apiOffline   = !telemetry.online;
+  const modelOffline = telemetry.online && telemetry.model != null && !telemetry.model.configured;
 
   return (
     <main
@@ -197,7 +216,20 @@ export default function Home() {
       className="relative min-h-screen overflow-hidden px-4 py-4 text-slate-100 sm:px-6 lg:px-8"
     >
       <div className="scanlines absolute inset-0 opacity-25" />
+
+      {/* Step 1 -- OFFLINE banner */}
+      {(apiOffline || modelOffline) && (
+        <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-center gap-2 rounded-lg border border-red-500/50 bg-red-900/40 px-4 py-2 text-sm text-red-200">
+          <AlertTriangle size={14} className="shrink-0" />
+          {apiOffline
+            ? "VERONICA OFFLINE - Check FastAPI backend is running on port 8000"
+            : "VERONICA OFFLINE - Ollama model not configured or unreachable"}
+        </div>
+      )}
+
       <div className="relative z-10 mx-auto grid max-w-7xl gap-4 lg:grid-cols-[300px_1fr_320px]">
+
+        {/* ── LEFT PANEL ────────────────────────────────── */}
         <motion.aside
           {...(mounted ? fade(0) : {})}
           className="hud-panel rounded-lg p-4"
@@ -233,44 +265,65 @@ export default function Home() {
             })}
           </div>
 
-          <div className="mt-5 rounded-lg border border-white/10 bg-black/20 p-3">
+          {/* Step 2 -- SENTINEL threat badge */}
+          {mode === "SENTINEL" && (
+            <div
+              className="mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
+              style={{
+                color: "var(--accent-strong)",
+                borderColor: "var(--accent-border)",
+                background: "var(--accent-glow)",
+              }}
+            >
+              <span className="animate-pulse">&#9679;</span>
+              <span className="uppercase tracking-widest">THREAT LEVEL: MONITORING</span>
+            </div>
+          )}
+
+          {/* Telemetry -- Step 1 real data */}
+          <motion.div
+            {...(mounted ? fade(60) : {})}
+            className="mt-5 rounded-lg border border-white/10 bg-black/20 p-3"
+          >
             <div className="mb-3 flex items-center justify-between">
               <p className="flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
                 <Activity size={16} /> System Monitor
               </p>
               <span
                 className={`rounded px-2 py-0.5 text-[10px] font-semibold tracking-[0.18em] ${
-                  offline ? "bg-pink-500/20 text-pink-200" : "bg-emerald-500/15 text-emerald-200"
+                  apiOffline ? "bg-pink-500/20 text-pink-200" : "bg-emerald-500/15 text-emerald-200"
                 }`}
               >
-                {offline ? "OFFLINE" : "ONLINE"}
+                {apiOffline ? "OFFLINE" : "ONLINE"}
               </span>
             </div>
             <div className="space-y-2 text-xs">
-              <Row label="Model" value={telemetry.model?.model ?? "—"} />
+              <Row label="Model"    value={telemetry.model?.model    ?? "--"} />
               <Row
                 label="Provider"
-                value={telemetry.model?.base_url ?? "—"}
+                value={telemetry.model?.base_url ?? "--"}
                 title={telemetry.model?.base_url}
               />
               <Row
                 label="RSS"
-                value={telemetry.system ? `${telemetry.system.stats.rss_mb.toFixed(0)} MB` : "—"}
+                value={telemetry.system ? `${telemetry.system.stats.rss_mb.toFixed(0)} MB` : "--"}
               />
               <Row
                 label="Sessions"
-                value={telemetry.system?.active_sessions != null ? String(telemetry.system.active_sessions) : "—"}
+                value={telemetry.system?.active_sessions != null ? String(telemetry.system.active_sessions) : "--"}
               />
               <Row
                 label="Health latency"
-                value={telemetry.latencyMs != null ? `${telemetry.latencyMs} ms` : "—"}
+                value={telemetry.latencyMs != null ? `${telemetry.latencyMs} ms` : "--"}
               />
-              <Row label="Last reply" value={chatLatency != null ? `${chatLatency} ms` : "—"} />
+              <Row label="Last reply" value={chatLatency != null ? `${chatLatency} ms` : "--"} />
             </div>
-          </div>
+          </motion.div>
         </motion.aside>
 
+        {/* ── CENTER ────────────────────────────────────── */}
         <section className="grid gap-4">
+          {/* Step 5 inner stagger: center col starts at 150 */}
           <motion.div
             {...(mounted ? fade(150) : {})}
             className="hud-panel rounded-lg p-4"
@@ -287,17 +340,20 @@ export default function Home() {
                   onCommand={(text) => void sendMessage(text)}
                   speak={latestAssistantReply}
                   busy={busy}
+                  onRecordingChange={setIsRecording}
                 />
               </div>
             </div>
+            {/* Step 3 -- pass isThinking + isListening */}
             <ErrorBoundary name="ArcCore">
-              <ArcCore mode={mode} busy={busy} />
+              <ArcCore mode={mode} isThinking={busy} isListening={isRecording} />
             </ErrorBoundary>
             <p className="mx-auto max-w-2xl text-center text-sm text-slate-300">{activeBriefing}</p>
           </motion.div>
 
+          {/* Step 5 inner: second panel at 150+60=210 */}
           <motion.div
-            {...(mounted ? fade(150) : {})}
+            {...(mounted ? fade(210) : {})}
             className="hud-panel rounded-lg p-4"
           >
             <div className="mb-3 flex items-center justify-between">
@@ -320,8 +376,14 @@ export default function Home() {
                   <p className="mb-1 text-xs uppercase tracking-[0.18em] text-slate-400">
                     {message.role === "assistant" ? "VERONICA" : "COMMANDER"}
                   </p>
+                  {/* Step 8 -- CSS streaming cursor */}
                   <span>{message.content}</span>
-                  {message.streaming ? <span className="ml-1 inline-block animate-pulse">▍</span> : null}
+                  {message.streaming && index === messages.length - 1 ? (
+                    <span
+                      className="inline-block w-0.5 h-4 ml-0.5 align-middle animate-pulse"
+                      style={{ background: "var(--accent-strong)" }}
+                    />
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -342,18 +404,21 @@ export default function Home() {
             </form>
           </motion.div>
 
-          <motion.div {...(mounted ? fade(300) : {})}>
+          {/* Step 5 inner: third panel at 150+120=270 */}
+          <motion.div {...(mounted ? fade(270) : {})}>
             <ErrorBoundary name="OperationsPanels">
               <OperationsPanels />
             </ErrorBoundary>
           </motion.div>
         </section>
 
-        <motion.aside
-          {...(mounted ? fade(300) : {})}
-          className="space-y-4"
-        >
-          <div className="hud-panel rounded-lg p-4">
+        {/* ── RIGHT PANEL ───────────────────────────────── */}
+        {/* Step 5: right col panels individually staggered at 300, 360, 420 */}
+        <aside className="space-y-4">
+          <motion.div
+            {...(mounted ? fade(300) : {})}
+            className="hud-panel rounded-lg p-4"
+          >
             <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
               <Code2 size={16} /> Protocols
             </p>
@@ -368,9 +433,12 @@ export default function Home() {
                 </button>
               ))}
             </div>
-          </div>
+          </motion.div>
 
-          <div className="hud-panel rounded-lg p-4">
+          <motion.div
+            {...(mounted ? fade(360) : {})}
+            className="hud-panel rounded-lg p-4"
+          >
             <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
               <Shield size={16} /> Security Rules
             </p>
@@ -380,9 +448,12 @@ export default function Home() {
               <p>Autonomous steps are logged.</p>
               <p>Shell execution is whitelist-first.</p>
             </div>
-          </div>
+          </motion.div>
 
-          <div className="hud-panel rounded-lg p-4">
+          <motion.div
+            {...(mounted ? fade(420) : {})}
+            className="hud-panel rounded-lg p-4"
+          >
             <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
               <Bell size={16} /> Live Notifications
             </p>
@@ -396,8 +467,8 @@ export default function Home() {
                 </div>
               ))}
             </div>
-          </div>
-        </motion.aside>
+          </motion.div>
+        </aside>
       </div>
     </main>
   );

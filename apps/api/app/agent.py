@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from app.config import settings
+
 from app.llm_client import call_chat, stream_chat
 from app.models import AssistantMode, ChatRequest, ChatResponse, ToolCallPlan
 
@@ -104,25 +104,22 @@ HARD RULES (apply in ALL modes, no exceptions):
 """
 
 
+_FALLBACK_REASON: dict[str, str] = {
+    "not_configured": "No model provider configured. Set OPENROUTER_API_KEYS or OPENAI_API_KEY in .env.",
+    "rate_limited":   "All available API keys are currently rate-limited. Try again in a moment.",
+    "offline":        "Model endpoint is unreachable. Check network or provider status.",
+}
+
+
 def local_fallback_response(request: ChatRequest, protocol: str | None, tool_plan: list[ToolCallPlan], provider_status: str) -> str:
-    mode_directive = MODE_PROMPTS[request.mode]
-    protocol_line = PROTOCOLS.get(protocol, "Standing by. No special protocol required.")
-    response = (
-        f"Sir, {protocol_line} {mode_directive} "
-        f"I have identified {len(tool_plan)} tool chain candidate(s). "
-        "Recommendation: proceed with the lowest-risk action first, log every autonomous step, and request confirmation before anything with filesystem, network, deployment, or credential impact."
-    )
-
-    if provider_status == "not_configured":
-        response += " Local planning mode is active because the model provider is not configured."
-    elif provider_status == "rate_limited":
-        response += " The active model is saturated at the moment, so I have dropped to fallback planning instead of failing theatrically."
-    elif provider_status == "offline":
-        response += " The model endpoint appears offline, so I am keeping the command center responsive with fallback planning."
+    if provider_status in _FALLBACK_REASON:
+        reason = _FALLBACK_REASON[provider_status]
     elif provider_status.startswith("error:"):
-        response += " The model call hit an upstream issue, so I am continuing in fallback planning mode."
-
-    return response
+        code = provider_status.split(":", 1)[1]
+        reason = f"API returned error {code}. Check your key and model name in .env."
+    else:
+        reason = "Model unavailable."
+    return f"Sir, inference offline. {reason}"
 
 
 def build_messages(request: ChatRequest, protocol: str | None, extras: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
@@ -214,14 +211,9 @@ def get_suggested_actions(mode: AssistantMode, protocol: str | None) -> list[str
     return suggestions[:3]
 
 
-def model_health() -> dict[str, str | bool]:
-    configured = bool(settings.openai_api_key and settings.openai_model)
-    return {
-        "configured": configured,
-        "base_url": settings.openai_base_url or "default",
-        "model": settings.openai_model,
-        "provider_key_present": bool(settings.openai_api_key),
-    }
+def model_health() -> dict[str, str | bool | int]:
+    from app.llm_client import backend_status
+    return backend_status()
 
 
 async def generate_response(

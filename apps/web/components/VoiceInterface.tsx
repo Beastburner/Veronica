@@ -9,6 +9,7 @@ type VoiceInterfaceProps = {
   onCommand: (text: string) => void;
   speak: string;
   busy?: boolean;
+  onRecordingChange?: (recording: boolean) => void;
 };
 
 type Phase = "idle" | "recording" | "transcribing" | "denied" | "unavailable" | "error";
@@ -32,7 +33,7 @@ function suffixFor(mimeType: string): string {
   return "webm";
 }
 
-export function VoiceInterface({ onCommand, speak, busy }: VoiceInterfaceProps) {
+export function VoiceInterface({ onCommand, speak, busy, onRecordingChange }: VoiceInterfaceProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -120,6 +121,7 @@ export function VoiceInterface({ onCommand, speak, busy }: VoiceInterfaceProps) 
 
       if (cancelled) {
         setPhase("idle");
+        onRecordingChange?.(false);
         return;
       }
 
@@ -140,6 +142,7 @@ export function VoiceInterface({ onCommand, speak, busy }: VoiceInterfaceProps) 
         const payload = (await response.json()) as { text?: string };
         const text = (payload.text ?? "").trim();
         setPhase("idle");
+        onRecordingChange?.(false);
         if (text) {
           setLastHeard(text);
           onCommand(text);
@@ -148,6 +151,7 @@ export function VoiceInterface({ onCommand, speak, busy }: VoiceInterfaceProps) 
         }
       } catch (err: unknown) {
         setPhase("error");
+        onRecordingChange?.(false);
         setErrorText(err instanceof Error && err.message.length < 120 ? err.message : "Transcription failed.");
         window.setTimeout(() => setPhase("idle"), 2200);
       }
@@ -163,7 +167,8 @@ export function VoiceInterface({ onCommand, speak, busy }: VoiceInterfaceProps) 
     setPhase("recording");
     setElapsed(0);
     elapsedTimerRef.current = setInterval(() => setElapsed((t) => t + 1), 1000);
-  }, [cleanupStream, onCommand]);
+    onRecordingChange?.(true);
+  }, [cleanupStream, onCommand, onRecordingChange]);
 
   const stop = useCallback(() => {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {

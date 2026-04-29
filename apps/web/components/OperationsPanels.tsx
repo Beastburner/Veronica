@@ -67,7 +67,7 @@ export function OperationsPanels() {
       setReminders(reminderData.items);
       setError(null);
     } catch {
-      setError("Failed to load data — is the API running on port 8000?");
+      setError("Failed to load data. Is the API running on port 8000?");
     }
   }
 
@@ -138,7 +138,7 @@ export function OperationsPanels() {
       setTaskInput("");
       await refreshAll();
     } catch {
-      setError("Failed to create task — API may be offline.");
+      setError("Failed to create task. API may be offline.");
     } finally {
       setBusy(null);
     }
@@ -158,7 +158,7 @@ export function OperationsPanels() {
       setNoteInput("");
       await refreshAll();
     } catch {
-      setError("Failed to save note — API may be offline.");
+      setError("Failed to save note. API may be offline.");
     } finally {
       setBusy(null);
     }
@@ -178,7 +178,7 @@ export function OperationsPanels() {
       setReminderInput("");
       await refreshAll();
     } catch {
-      setError("Failed to set reminder — API may be offline.");
+      setError("Failed to set reminder. API may be offline.");
     } finally {
       setBusy(null);
     }
