@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { Activity, AlertTriangle, Bell, BrainCircuit, Code2, Shield, TerminalSquare } from "lucide-react";
-import { FormEvent, useCallback, useMemo, useRef, useState } from "react";
+import React, { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { ArcCore } from "@/components/ArcCore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OperationsPanels } from "@/components/OperationsPanels";
@@ -10,6 +10,93 @@ import { VoiceInterface } from "@/components/VoiceInterface";
 import { useMemoryEfficientState } from "@/hooks/useMemoryEfficientState";
 import { useMounted } from "@/hooks/useMounted";
 import { useTelemetry } from "@/hooks/useTelemetry";
+
+function renderMarkdown(text: string): React.ReactNode[] {
+  const lines = text.split("\n");
+  const nodes: React.ReactNode[] = [];
+  let inCode = false;
+  let codeBuf: string[] = [];
+  let codeLang = "";
+
+  const renderInline = (line: string, key: string | number) => {
+    const parts: React.ReactNode[] = [];
+    const re = /(\*\*(.+?)\*\*|`([^`]+)`|\*(.+?)\*)/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line)) !== null) {
+      if (m.index > last) parts.push(line.slice(last, m.index));
+      if (m[2]) parts.push(<strong key={`${key}-b${m.index}`} className="font-semibold text-white">{m[2]}</strong>);
+      else if (m[3]) parts.push(<code key={`${key}-c${m.index}`} className="rounded bg-black/40 px-1 py-0.5 font-mono text-[11px] text-cyan-300">{m[3]}</code>);
+      else if (m[4]) parts.push(<em key={`${key}-i${m.index}`} className="italic text-slate-300">{m[4]}</em>);
+      last = m.index + m[0].length;
+    }
+    if (last < line.length) parts.push(line.slice(last));
+    return parts;
+  };
+
+  lines.forEach((line, i) => {
+    if (line.startsWith("```")) {
+      if (!inCode) {
+        inCode = true;
+        codeLang = line.slice(3).trim();
+        codeBuf = [];
+      } else {
+        nodes.push(
+          <pre key={`code-${i}`} className="my-2 overflow-x-auto rounded-lg border border-white/10 bg-black/50 p-3 font-mono text-[11px] leading-relaxed text-emerald-300">
+            <code>{codeBuf.join("\n")}</code>
+          </pre>
+        );
+        inCode = false;
+        codeLang = "";
+        codeBuf = [];
+      }
+      return;
+    }
+    if (inCode) { codeBuf.push(line); return; }
+
+    if (/^#{1,3} /.test(line)) {
+      const level = line.match(/^(#+) /)?.[1].length ?? 1;
+      const content = line.replace(/^#+\s/, "");
+      const cls = level === 1 ? "text-base font-bold text-white mt-2 mb-1" : "text-sm font-semibold text-slate-100 mt-1.5 mb-0.5";
+      nodes.push(<p key={i} className={cls}>{renderInline(content, i)}</p>);
+      return;
+    }
+    if (/^[-*] /.test(line)) {
+      nodes.push(
+        <div key={i} className="flex items-start gap-2 my-0.5">
+          <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "var(--accent-strong)" }} />
+          <span className="leading-relaxed">{renderInline(line.slice(2), i)}</span>
+        </div>
+      );
+      return;
+    }
+    if (/^\d+\. /.test(line)) {
+      const num = line.match(/^(\d+)\. /)?.[1];
+      nodes.push(
+        <div key={i} className="flex items-start gap-2 my-0.5">
+          <span className="mt-0.5 shrink-0 text-[10px] font-mono" style={{ color: "var(--accent-text)" }}>{num}.</span>
+          <span className="leading-relaxed">{renderInline(line.replace(/^\d+\. /, ""), i)}</span>
+        </div>
+      );
+      return;
+    }
+    if (line.trim() === "") {
+      nodes.push(<div key={i} className="my-1" />);
+      return;
+    }
+    nodes.push(<p key={i} className="leading-relaxed">{renderInline(line, i)}</p>);
+  });
+
+  if (inCode && codeBuf.length) {
+    nodes.push(
+      <pre key="code-tail" className="my-2 overflow-x-auto rounded-lg border border-white/10 bg-black/50 p-3 font-mono text-[11px] leading-relaxed text-emerald-300">
+        <code>{codeBuf.join("\n")}</code>
+      </pre>
+    );
+  }
+
+  return nodes;
+}
 
 function fade(delayMs: number = 0) {
   if (
@@ -207,8 +294,10 @@ export default function Home() {
   }
 
   const modeKey = mode.toLowerCase();
-  const apiOffline   = !telemetry.online;
-  const modelOffline = telemetry.online && telemetry.model != null && !telemetry.model.configured;
+  const apiOffline    = !telemetry.online;
+  const modelOffline  = telemetry.online && telemetry.model != null && !telemetry.model.configured;
+  const noKeySet      = modelOffline && telemetry.model != null && !telemetry.model.provider_key_present;
+  const allRateLimited = modelOffline && telemetry.model != null && telemetry.model.provider_key_present;
 
   return (
     <main
@@ -217,13 +306,29 @@ export default function Home() {
     >
       <div className="scanlines absolute inset-0 opacity-25" />
 
-      {/* Step 1 -- OFFLINE banner */}
-      {(apiOffline || modelOffline) && (
+      {/* Status banners */}
+      {apiOffline && (
         <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-center gap-2 rounded-lg border border-red-500/50 bg-red-900/40 px-4 py-2 text-sm text-red-200">
           <AlertTriangle size={14} className="shrink-0" />
-          {apiOffline
-            ? "VERONICA OFFLINE - Check FastAPI backend is running on port 8000"
-            : "VERONICA OFFLINE - Ollama model not configured or unreachable"}
+          API OFFLINE — start the FastAPI backend: <code className="ml-1 font-mono text-xs">uvicorn app.main:app --reload</code>
+        </div>
+      )}
+      {noKeySet && (
+        <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-900/30 px-4 py-2 text-sm text-amber-200">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            No LLM key configured. Add one to <code className="font-mono text-xs text-amber-100">apps/api/.env</code>:&nbsp;
+            <code className="font-mono text-xs text-amber-100">OPENROUTER_API_KEYS=sk-or-...</code>
+            &nbsp;or&nbsp;
+            <code className="font-mono text-xs text-amber-100">OPENAI_API_KEY=sk-...</code>
+            &nbsp;then restart the API.
+          </span>
+        </div>
+      )}
+      {allRateLimited && (
+        <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-center gap-2 rounded-lg border border-orange-500/40 bg-orange-900/30 px-4 py-2 text-sm text-orange-200">
+          <AlertTriangle size={14} className="shrink-0" />
+          All API keys are rate-limited. VERONICA will retry automatically in ~5 minutes.
         </div>
       )}
 
@@ -298,11 +403,24 @@ export default function Home() {
               </span>
             </div>
             <div className="space-y-2 text-xs">
-              <Row label="Model"    value={telemetry.model?.model    ?? "--"} />
+              <Row label="Model" value={telemetry.model?.model ?? "--"} />
               <Row
-                label="Provider"
-                value={telemetry.model?.base_url ?? "--"}
-                title={telemetry.model?.base_url}
+                label="OpenRouter"
+                value={
+                  !telemetry.model ? "--"
+                  : (telemetry.model as Record<string,unknown>).primary_ok ? "online ✓"
+                  : (telemetry.model as Record<string,unknown>).provider_key_present ? "rate-limited"
+                  : "not configured"
+                }
+              />
+              <Row
+                label="Ollama"
+                value={
+                  !telemetry.model ? "--"
+                  : (telemetry.model as Record<string,unknown>).fallback_ok
+                    ? `${(telemetry.model as Record<string,unknown>).fallback_model ?? "local"} ✓`
+                    : "not configured"
+                }
               />
               <Row
                 label="RSS"
@@ -376,8 +494,7 @@ export default function Home() {
                   <p className="mb-1 text-xs uppercase tracking-[0.18em] text-slate-400">
                     {message.role === "assistant" ? "VERONICA" : "COMMANDER"}
                   </p>
-                  {/* Step 8 -- CSS streaming cursor */}
-                  <span>{message.content}</span>
+                  <div className="space-y-0.5 text-sm">{renderMarkdown(message.content)}</div>
                   {message.streaming && index === messages.length - 1 ? (
                     <span
                       className="inline-block w-0.5 h-4 ml-0.5 align-middle animate-pulse"

@@ -289,6 +289,21 @@ def _backends() -> list[_KeyPool | _SingleClient]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _should_fallback(status: str) -> bool:
+    """Return True when the status means we should try the next backend."""
+    if status in ("rate_limited", "offline"):
+        return True
+    # Also fall through on server-side or model-not-found errors (4xx/5xx from provider).
+    # Do NOT fall through on auth errors (401/403) — the next backend won't fix those.
+    if status.startswith("error:"):
+        try:
+            code = int(status.split(":", 1)[1])
+            return code not in (401, 403)
+        except ValueError:
+            return True  # "error:unexpected" etc.
+    return False
+
+
 def call_chat(
     messages: list[dict[str, str]],
     *,
@@ -302,11 +317,10 @@ def call_chat(
     last_status = "not_configured"
     for backend in chain:
         text, status = backend.call_chat(messages, temperature=temperature, max_tokens=max_tokens, model=model)
-        if status not in ("rate_limited", "offline"):
+        if not _should_fallback(status):
             return text, status
         last_status = status
-        if status == "rate_limited":
-            log.info("Primary rate-limited, trying next backend")
+        log.info("Backend %s (%s) — trying next", status, getattr(backend, "_model", "?"))
     return None, last_status
 
 
@@ -324,12 +338,15 @@ def stream_chat(
         last_status: str | None = None
         for chunk, status in backend.stream_chat(messages, temperature=temperature, model=model):
             last_status = status
-            if status == "rate_limited" and i + 1 < len(chain):
-                log.info("Primary stream rate-limited, falling back to next backend")
-                break  # try next backend, nothing was yielded yet
+            if _should_fallback(status) and i + 1 < len(chain):
+                log.info(
+                    "Backend %s (%s) — falling back to next backend",
+                    status, getattr(backend, "_model", "?"),
+                )
+                break  # don't yield the error; try next backend
             yield chunk, status
         else:
-            return  # stream finished cleanly
+            return  # stream finished cleanly (done or final backend errored)
     # all backends exhausted
     yield None, "rate_limited"
 
@@ -367,13 +384,49 @@ def call_json(prompt: str, *, schema_hint: str = "", max_tokens: int = 200) -> d
 
 
 def backend_status() -> dict[str, Any]:
-    """Return combined status of primary + fallback backends."""
+    """Return combined status — configured=True if ANY backend can serve requests."""
     _init_backends()
     if _primary is None and _fallback is None:
         return {"mode": "none", "configured": False, "provider_key_present": False, "model": None, "base_url": None}
-    active = _primary or _fallback
+
+    primary_ok   = _primary is not None and _primary.status()["configured"]
+    fallback_ok  = _fallback is not None  # SingleClient is always ready
+
+    # Report whichever backend will actually handle the next request
+    active = _primary if primary_ok else (_fallback if fallback_ok else _primary)
     status = active.status()  # type: ignore[union-attr]
+
+    # System is usable if at least one backend is ready
+    status["configured"] = primary_ok or fallback_ok
+
     if _primary and _fallback:
         status["fallback_model"] = _fallback._model
         status["fallback_base_url"] = _fallback._base_url or "default"
+        status["primary_ok"] = primary_ok
+        status["fallback_ok"] = fallback_ok
+
     return status
+
+
+def get_embedding(text: str) -> list[float] | None:
+    """Get a vector embedding for semantic search."""
+    _init_backends()
+    client_to_use = _fallback or _primary
+    if not client_to_use:
+        return None
+    try:
+        if hasattr(client_to_use, "_clients"):
+            c = getattr(client_to_use, "_client")(getattr(client_to_use, "_keys")[0])
+        else:
+            c = getattr(client_to_use, "_client")
+            
+        model = getattr(client_to_use, "_model", "text-embedding-3-small")
+        if "llama" in model.lower() or "qwen" in model.lower():
+            # Ollama handles embeddings using the chat model name usually, or nomic-embed-text
+            pass
+            
+        resp = c.embeddings.create(input=[text], model=model)
+        return resp.data[0].embedding
+    except Exception as e:
+        log.warning("Failed to get embedding: %s", e)
+        return None

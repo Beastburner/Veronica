@@ -62,7 +62,15 @@
       "Bash(echo \"TSC_EXIT=$?\")",
       "Bash(python -c ')",
       "Bash(python -c ' *)",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k: d[k] for k in ['scripts','devDependencies'] if k in d}, indent=2\\)\\)\")"
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k: d[k] for k in ['scripts','devDependencies'] if k in d}, indent=2\\)\\)\")",
+      "Bash(python -c \"from pathlib import Path; print\\('Graph exists' if Path\\('graphify-out/graph.json'\\).exists\\(\\) else 'No graph found'\\)\")",
+      "Bash(dir \"C:\\\\Users\\\\parth\\\\Desktop\\\\websites\\\\veronica\\\\apps\\\\web\")",
+      "Bash(python -c \"from app.oauth_store import get_connected_services; from app.life_log import list_entries; from app.gmail import list_inbox; from app.gcal import list_events; from app.scheduler import start; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"from app.main import app; print\\('main.py OK'\\)\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name']\\) for m in d.get\\('models',[]\\)]\")",
+      "Bash(python *)",
+      "Bash(powershell *)",
+      "Bash(Remove-Item *)"
     ]
   }
 }

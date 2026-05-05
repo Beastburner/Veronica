@@ -19,13 +19,37 @@ from app.storage import (
 
 log = logging.getLogger("veronica.intent")
 
-IntentType = Literal["write", "read", "tool", "protocol", "llm"]
+IntentType = Literal["write", "read", "tool", "protocol", "llm", "social"]
 
 
 @dataclass
 class IntentResult:
     type: IntentType
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+# ── Social intents (greetings / casual openers — no context injected) ────────
+
+_SOCIAL_RE = re.compile(
+    r"^(?:hey|hi|hello|sup+|yo+|howdy|hiya|heya|"
+    r"w+[au]+s+[ua]*p+|what(?:\'s|s)?\s*up|"
+    r"how(?:\'s|\s+are|\s+you|\s+is\s+it\s+going)?|"
+    r"good\s+(?:morning|evening|afternoon|night|day))"
+    r"[\s!?.,]*$",
+    re.IGNORECASE,
+)
+
+_SOCIAL_REPLIES = ("Hey.", "Sup.", "Hey, what's good.", "Yo.", "Hey there.")
+_social_reply_index = 0
+
+
+def _social_intent(message: str) -> IntentResult | None:
+    global _social_reply_index
+    if _SOCIAL_RE.match(message.strip()):
+        reply = _SOCIAL_REPLIES[_social_reply_index % len(_SOCIAL_REPLIES)]
+        _social_reply_index += 1
+        return IntentResult("social", {"message": reply})
+    return None
 
 
 # ── Read intents (deterministic answers) ────────────────────────────────────
@@ -233,8 +257,8 @@ def _llm_write_intent(message: str) -> IntentResult | None:
     schema = (
         'Schema: {"intent": "task" | "reminder" | "note" | "memory" | "none", '
         '"content": string, "time": string | null}. '
-        'Use "memory" only for long-term facts the assistant must permanently know about the user. '
-        'Use "reminder" for time-bound nudges. Use "task" for actionable to-dos to CREATE. '
+        'Use "memory" only for long-term facts the assistant must permanently know about the user (e.g., preferences, relations, birthdays, factual dates). '
+        'Use "reminder" for time-bound nudges to alert the user at a specific future time. Use "task" for actionable to-dos to CREATE. '
         'Use "note" for short observations to SAVE. '
         '"time" should be a natural phrase like "tomorrow at 3pm" or null if no time is implied. '
         'CRITICAL: Only extract content that is EXPLICITLY stated in the message. '
@@ -273,6 +297,146 @@ def _llm_write_intent(message: str) -> IntentResult | None:
         return IntentResult("write", perform_create_reminder(composed))
 
     return None
+
+
+# ── Action intents: email / calendar (LLM-extracted) ────────────────────────
+
+_EMAIL_ACTION_KW = (
+    # send variants
+    "send email", "send an email", "send mail", "send a mail",
+    "shoot an email", "shoot a mail",
+    # email to / mail to
+    "email to", "mail to",
+    # compose variants (mail or email)
+    "compose email", "compose an email", "compose mail", "compose a mail",
+    # draft variants
+    "draft email", "draft an email", "draft mail", "draft a mail",
+    # write variants
+    "write email", "write an email", "write mail", "write a mail",
+)
+_CALENDAR_ACTION_KW = (
+    "schedule meeting", "schedule a meeting", "create event", "create a meeting",
+    "book meeting", "book a meeting", "set up meeting", "set up a meeting",
+    "setup meeting", "setup a meeting", "set a meeting", "set meeting",
+    "create an event", "add meeting", "schedule call", "schedule a call",
+    "book a call", "book call",
+)
+
+
+def _llm_action_intent(message: str) -> IntentResult | None:
+    lowered = message.lower()
+    is_email = any(kw in lowered for kw in _EMAIL_ACTION_KW)
+    is_calendar = any(kw in lowered for kw in _CALENDAR_ACTION_KW)
+    if not is_email and not is_calendar:
+        return None
+
+    now = current_local_time()
+
+    if is_email:
+        schema = (
+            'Schema: {"action": "send_email" | "draft_email" | "none", '
+            '"to": string, "subject": string, "body": string}. '
+            'Extract the recipient (to), generate a concise subject line, '
+            'and write a complete professional email body based on the user\'s intent. '
+            'Use "draft_email" ONLY when the user explicitly says "draft". '
+            'For "compose", "write", "send", or any other phrasing → use "send_email". '
+            'If no valid email recipient is present, return {"action": "none", "to": "", "subject": "", "body": ""}.'
+        )
+    else:
+        schema = (
+            'Schema: {"action": "create_event" | "none", "title": string, '
+            '"start": string, "end": string, "attendees": [string] | null, "description": string}. '
+            f'Current datetime: {now.strftime("%Y-%m-%dT%H:%M:%S")} IST (Asia/Kolkata, UTC+05:30). '
+            'start and end must be ISO 8601 with seconds (YYYY-MM-DDTHH:MM:SS). '
+            'Default event duration is 60 minutes when not stated. '
+            'attendees is a list of email addresses or null. '
+            'If time cannot be determined, return {"action": "none"}.'
+        )
+
+    payload = call_json(f"User message: {message!r}", schema_hint=schema, max_tokens=280)
+    if not payload or payload.get("action") == "none":
+        return None
+
+    action = (payload.get("action") or "").strip()
+
+    if action in ("send_email", "draft_email"):
+        to = (payload.get("to") or "").strip()
+        subject = (payload.get("subject") or "").strip()
+        body = (payload.get("body") or "").strip()
+        if not subject:
+            return None
+        if action == "draft_email":
+            return IntentResult("tool", {"tool": "gmail_draft", "args": {"to": to, "subject": subject, "body": body}})
+        # "send_email" — check if user explicitly said "send" or used compose/write
+        _EXPLICIT_SEND_KW = ("send email", "send an email", "send mail", "send a mail",
+                             "email to", "mail to", "shoot an email", "shoot a mail")
+        explicit_send = any(kw in lowered for kw in _EXPLICIT_SEND_KW)
+        return IntentResult("tool", {
+            "tool": "gmail_send",
+            "args": {"to": to, "subject": subject, "body": body},
+            "confirm_first": not explicit_send,
+        })
+
+    if action == "create_event":
+        title = (payload.get("title") or "").strip()
+        start = (payload.get("start") or "").strip()
+        end = (payload.get("end") or "").strip()
+        attendees = payload.get("attendees") or None
+        description = (payload.get("description") or "").strip()
+
+        if not title:
+            return None
+
+        if not start or not end:
+            # Ask for the missing time instead of failing silently
+            ask = f"When should I schedule '{title}'? Please provide a date and time."
+            return IntentResult("read", {
+                "kind": "calendar_need_info",
+                "message": ask,
+                "partial": {"title": title, "attendees": attendees, "description": description},
+            })
+
+        return IntentResult("tool", {
+            "tool": "calendar_create",
+            "args": {
+                "title": title,
+                "start_datetime": start,
+                "end_datetime": end,
+                "description": description,
+                "attendees": attendees,
+            },
+            "confirm_first": True,
+        })
+
+    return None
+
+
+def _complete_partial_calendar(partial: dict, message: str) -> dict | None:
+    """Try to extract start/end time from a follow-up message to complete a partial calendar event."""
+    now = current_local_time()
+    title = partial.get("title", "")
+    schema = (
+        'Schema: {"action": "done" | "none", "start": string, "end": string}. '
+        f'Current datetime: {now.strftime("%Y-%m-%dT%H:%M:%S")} IST (Asia/Kolkata, UTC+05:30). '
+        f'Event title: "{title}". '
+        'Extract start and end from the message (ISO 8601, YYYY-MM-DDTHH:MM:SS). '
+        'Default duration is 60 minutes if end is not stated. '
+        'If time is still unclear, return {"action": "none"}.'
+    )
+    payload = call_json(f"Time info: {message!r}", schema_hint=schema, max_tokens=120)
+    if not payload or payload.get("action") == "none":
+        return None
+    start = (payload.get("start") or "").strip()
+    end = (payload.get("end") or "").strip()
+    if not start or not end:
+        return None
+    return {
+        "title": title,
+        "start_datetime": start,
+        "end_datetime": end,
+        "description": partial.get("description", ""),
+        "attendees": partial.get("attendees"),
+    }
 
 
 # ── Protocol detection ──────────────────────────────────────────────────────
@@ -344,7 +508,7 @@ def _tool_intent(message: str) -> IntentResult | None:
 
 
 def classify(message: str) -> IntentResult:
-    for handler in (_write_intent_regex, _read_intent, _tool_intent, _protocol_intent, _llm_write_intent):
+    for handler in (_social_intent, _write_intent_regex, _read_intent, _tool_intent, _llm_action_intent, _protocol_intent, _llm_write_intent):
         try:
             result = handler(message)
         except Exception:

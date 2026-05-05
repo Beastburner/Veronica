@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     vector_database_url: str | None = None
 
+    # ── Google OAuth ─────────────────────────────────────────
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_redirect_uri: str = "http://localhost:8000/oauth/google/callback"
+    frontend_url: str = "http://localhost:3000"
+
+    # ── User identity ─────────────────────────────────────────
+    sender_name: str = "Parth Soni"
+
     # ── App ──────────────────────────────────────────────────
     app_name: str = "VERONICA"
     log_level: str = "INFO"

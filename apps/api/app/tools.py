@@ -257,7 +257,7 @@ async def get_open_issues(repo: str) -> dict[str, Any]:
     return {"tool": "get_open_issues", "ok": True, "repo": repo, "result": issues}
 
 
-async def create_issue(repo: str, title: str, body: str = "") -> dict[str, Any]:
+async def create_issue(repo: str, title: str, body: str = "") -> dict[str, Any]:  # noqa: E303
     token = os.getenv("GITHUB_TOKEN", "")
     if not token:
         return {"tool": "create_issue", "ok": False, "error": "GITHUB_TOKEN not configured"}
@@ -284,6 +284,78 @@ async def create_issue(repo: str, title: str, body: str = "") -> dict[str, Any]:
     }
 
 
+# ── Gmail wrappers ─────────────────────────────────────────────────────────
+
+
+async def gmail_inbox(max_results: int = 10) -> dict[str, Any]:
+    from app.gmail import list_inbox
+    return await list_inbox(max_results=max_results)
+
+
+async def gmail_read(message_id: str) -> dict[str, Any]:
+    from app.gmail import read_email
+    return await read_email(message_id=message_id)
+
+
+async def gmail_send(to: str, subject: str, body: str) -> dict[str, Any]:
+    from app.gmail import send_email
+    result = await send_email(to=to, subject=subject, body=body)
+    if result.get("ok"):
+        try:
+            from app.life_log import log_entry
+            log_entry("email_sent", f"Email to {to}", subject, {"to": to, "subject": subject})
+        except Exception:
+            pass
+    return result
+
+
+async def gmail_draft(to: str, subject: str, body: str) -> dict[str, Any]:
+    from app.gmail import draft_email
+    return await draft_email(to=to, subject=subject, body=body)
+
+
+async def gmail_search(query: str) -> dict[str, Any]:
+    from app.gmail import search_email
+    return await search_email(query=query)
+
+
+# ── Calendar wrappers ──────────────────────────────────────────────────────
+
+
+async def calendar_events(days_ahead: int = 7) -> dict[str, Any]:
+    from app.gcal import list_events
+    return await list_events(days_ahead=days_ahead)
+
+
+async def calendar_create(
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    description: str = "",
+    attendees: list[str] | None = None,
+) -> dict[str, Any]:
+    from app.gcal import create_event
+    result = await create_event(
+        title=title,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        description=description,
+        attendees=attendees,
+    )
+    if result.get("ok"):
+        try:
+            from app.life_log import log_entry
+            log_entry("meeting_scheduled", title, f"Start: {start_datetime}", {"attendees": attendees or []})
+        except Exception:
+            pass
+    return result
+
+
+async def calendar_free_slots(duration_minutes: int = 60, days_ahead: int = 7) -> dict[str, Any]:
+    from app.gcal import find_free_slot
+    return await find_free_slot(duration_minutes=duration_minutes, days_ahead=days_ahead)
+
+
 # ── Registry ────────────────────────────────────────────────────────────────
 
 ToolFn = Callable[..., Awaitable[dict[str, Any]]]
@@ -296,6 +368,16 @@ REGISTRY: dict[str, ToolFn] = {
     "run_system_command": run_system_command,
     "get_open_issues": get_open_issues,
     "create_issue": create_issue,
+    # Gmail
+    "gmail_inbox": gmail_inbox,
+    "gmail_read": gmail_read,
+    "gmail_send": gmail_send,
+    "gmail_draft": gmail_draft,
+    "gmail_search": gmail_search,
+    # Calendar
+    "calendar_events": calendar_events,
+    "calendar_create": calendar_create,
+    "calendar_free_slots": calendar_free_slots,
 }
 
 

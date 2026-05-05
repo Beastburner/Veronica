@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import re
+import json
+import math
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.db import get_db, utcnow
+from app.llm_client import get_embedding
+
+log = logging.getLogger("veronica.storage")
 
 APP_TZ = "Asia/Kolkata"
 
@@ -373,11 +379,15 @@ def get_recent_summary(session_id: str) -> str | None:
 
 
 def create_memory(content: str, tags: str = "") -> dict[str, Any]:
+    # Run embedding synchronously for simple local setups
+    emb = get_embedding(content)
+    embedding_str = json.dumps(emb) if emb else None
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO memories (content, tags, created_at) VALUES (?, ?, ?)",
-            (content, tags, utcnow()),
+            "INSERT INTO memories (content, tags, embedding, created_at) VALUES (?, ?, ?, ?)",
+            (content, tags, embedding_str, utcnow()),
         )
         return {
             "id": cursor.lastrowid,
@@ -417,6 +427,46 @@ def get_recent_memories(limit: int = 10) -> list[dict[str, Any]]:
     return items
 
 
+def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(b * b for b in v2))
+    if mag1 * mag2 == 0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+
+def get_relevant_memories(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    query_emb = get_embedding(query)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, content, tags, embedding, created_at FROM memories")
+        all_memories = [dict(row) for row in cursor.fetchall()]
+
+    if not query_emb:
+        # Fallback to recent if embeddings fail
+        return sorted(all_memories, key=lambda x: x["created_at"], reverse=True)[:limit]
+
+    scored = []
+    for m in all_memories:
+        emb_str = m.get("embedding")
+        if not emb_str:
+            continue
+        try:
+            emb = json.loads(emb_str)
+            score = _cosine_similarity(query_emb, emb)
+            scored.append((score, m))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Sort by descending similarity
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Return those with some minimal semantic relevance
+    return [m for score, m in scored if score > 0.4][:limit]
+
+
 def build_daily_briefing() -> dict[str, Any]:
     pending_tasks, _ = list_tasks(limit=5, status="pending")
     pending_reminders, _ = list_reminders(limit=5, status="pending")
@@ -442,7 +492,12 @@ def build_assistant_context(query: str) -> list[dict[str, str]]:
     lowered = query.lower()
     context: list[dict[str, str]] = []
 
-    memories = get_recent_memories(limit=10)
+    # Use semantic search for relevant memories
+    memories = get_relevant_memories(query, limit=10)
+    if not memories:
+        # Fallback to recent memories just to have some context if none are strongly relevant
+        memories = get_recent_memories(limit=3)
+
     if memories:
         joined = "\n".join(f"- {m['content']}" for m in memories)
         context.append(

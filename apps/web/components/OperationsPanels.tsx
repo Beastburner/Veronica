@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CalendarClock, CheckSquare, NotebookPen, TimerReset } from "lucide-react";
+import { ActivityPanel } from "@/components/ActivityPanel";
+import { CalendarPanel } from "@/components/CalendarPanel";
+import { EmailPanel } from "@/components/EmailPanel";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -39,7 +42,17 @@ async function fetchJson<T>(path: string): Promise<T> {
   return response.json();
 }
 
+type Tab = "operations" | "email" | "calendar" | "activity";
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: "operations", label: "Operations" },
+  { id: "email",      label: "Mail" },
+  { id: "calendar",   label: "Calendar" },
+  { id: "activity",   label: "Activity" },
+];
+
 export function OperationsPanels() {
+  const [activeTab, setActiveTab] = useState<Tab>("operations");
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -244,6 +257,29 @@ export function OperationsPanels() {
 
   return (
     <div className="space-y-4">
+      {/* Tab bar */}
+      <div className="flex gap-1 rounded-lg border border-white/10 bg-black/30 p-1">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition ${
+              activeTab === tab.id
+                ? "bg-[var(--accent)]/20 text-[var(--accent-text)] border border-[var(--accent)]/30"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "email" && <EmailPanel />}
+      {activeTab === "calendar" && <CalendarPanel />}
+      {activeTab === "activity" && <ActivityPanel />}
+
+      {activeTab === "operations" && (
+      <>
       {error ? (
         <div className="flex items-center justify-between rounded-lg border border-pink-300/40 bg-pink-400/10 px-4 py-2 text-sm text-pink-200">
           <span>{error}</span>
@@ -424,6 +460,8 @@ export function OperationsPanels() {
         </div>
       </section>
     </div>
+      </>
+      )}
     </div>
   );
 }

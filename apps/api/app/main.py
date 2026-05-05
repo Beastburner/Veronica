@@ -1,7 +1,11 @@
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
+import re
+import secrets
 import time
 import uuid
 from collections import OrderedDict
@@ -10,14 +14,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from app.agent import generate_response, model_health, stream_response, summarize_turns
 from app.bootstrap import ensure_ollama
 from app.config import settings
 from app.context.manager import BoundedContextWindow
-from app.db import init_db
+from app.db import delete_pending_action, init_db, load_pending_action, save_pending_action
 from app.intent_router import classify
+from app.life_log import list_entries as list_log_entries, log_entry
 from app.memory.hot_memory import hot_cache
 from app.models import (
     ChatRequest,
@@ -30,6 +35,12 @@ from app.models import (
     TaskUpdateRequest,
 )
 from app.monitoring.memory_monitor import MemoryMonitor
+from app.oauth_store import (
+    delete_oauth_token,
+    get_connected_services,
+    load_oauth_token,
+    save_oauth_token,
+)
 from app.storage import (
     build_assistant_context,
     build_daily_briefing,
@@ -85,6 +96,10 @@ def _compact_old_summaries(threshold: int = 5) -> int:
     return compacted
 
 
+# state -> code_verifier (PKCE)
+_oauth_states: dict[str, str] = {}
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -92,7 +107,10 @@ async def lifespan(_: FastAPI):
     log.info("ollama bootstrap: %s", status)
     asyncio.create_task(asyncio.to_thread(warm_up_whisper))
     asyncio.create_task(asyncio.to_thread(_run_compaction))
+    from app import scheduler as _sched
+    await asyncio.to_thread(_sched.start)
     yield
+    await asyncio.to_thread(_sched.stop)
 
 
 def _run_compaction() -> None:
@@ -133,6 +151,79 @@ async def request_logger(request: Request, call_next):
 CONTEXT_WINDOWS: OrderedDict[str, BoundedContextWindow] = OrderedDict()
 MAX_SESSIONS = 200
 MONITOR = MemoryMonitor(warning_mb=400, critical_mb=800)
+
+_CONFIRM_RE = re.compile(
+    r"^\s*(yes|yep|yeah|sure|ok|okay|go\s*ahead|send\s*it|send\s*this|"
+    r"send|confirm|do\s*it|proceed|absolutely)\s*[.!?,]*\s*$",
+    re.IGNORECASE,
+)
+_CANCEL_RE = re.compile(
+    r"^\s*(no|nope|cancel|don'?t\s+send|do\s+not\s+send|abort|"
+    r"stop|never\s*mind|discard|skip)\s*[.!?,]*\s*$",
+    re.IGNORECASE,
+)
+
+
+async def _handle_pending_confirmation(
+    session_id: str, message: str
+) -> tuple[str, str] | None:
+    """
+    Handle pending email/calendar confirmations and partial calendar completions.
+    Returns (response_text, provider_status) or None if not applicable.
+    """
+    pending = load_pending_action(session_id)
+    if not pending:
+        return None
+
+    ptype = pending.get("type", "email_confirm")
+    msg = message.strip()
+
+    # ── Partial calendar: user is providing missing time info ────────────────
+    if ptype == "calendar_partial":
+        if _CANCEL_RE.match(msg):
+            delete_pending_action(session_id)
+            return ("Meeting cancelled.", "cancelled")
+        from app.intent_router import _complete_partial_calendar
+        completed = _complete_partial_calendar(pending["partial"], message)
+        if completed:
+            save_pending_action(session_id, {
+                "type": "calendar_confirm",
+                "tool": "calendar_create",
+                "args": completed,
+            })
+            title = completed["title"]
+            start = completed["start_datetime"]
+            attendees = completed.get("attendees") or []
+            with_str = f"\nAttendees: {', '.join(attendees)}" if attendees else ""
+            preview = f"Title: {title}\nTime: {start}{with_str}"
+            return (f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?", "calendar_preview")
+        title = pending["partial"].get("title", "the meeting")
+        return (f"Still unclear — when exactly should I schedule '{title}'? Give me a date and time.", "calendar_clarification")
+
+    # ── Confirm / cancel for email or calendar ───────────────────────────────
+    if _CONFIRM_RE.match(msg):
+        delete_pending_action(session_id)
+        result = await execute_tool(pending["tool"], pending["args"])
+        if result.get("ok"):
+            if ptype == "calendar_confirm":
+                title = pending["args"].get("title", "Meeting")
+                start = pending["args"].get("start_datetime", "")
+                detail = result.get("result", {})
+                meet = detail.get("meet_link", "")
+                cal_url = detail.get("html_link", "")
+                extra = f"\nMeet: {meet}" if meet else "\n(No Meet link — personal Gmail account)"
+                extra += f"\nCalendar: {cal_url}" if cal_url else ""
+                return (f"Meeting '{title}' scheduled for {start}.{extra}", "meeting_scheduled")
+            to = pending["args"].get("to", "")
+            subj = pending["args"].get("subject", "")
+            return (f"Email sent to {to} — \"{subj}\".", "email_sent")
+        return (f"Failed: {result.get('error', 'unknown error')}", "action_failed")
+
+    if _CANCEL_RE.match(msg):
+        delete_pending_action(session_id)
+        return ("Meeting cancelled." if ptype == "calendar_confirm" else "Draft discarded.", "cancelled")
+
+    return None
 
 
 def get_or_create_window(session_id: str) -> BoundedContextWindow:
@@ -209,6 +300,15 @@ async def chat(
     if float(window.get_context()["utilization_pct"]) > 90:
         window.compress_old_messages(keep_last=3)
 
+    # ── Pending email confirmation check ────────────────────────────────────
+    pending_outcome = await _handle_pending_confirmation(session_id, request.message)
+    if pending_outcome is not None:
+        text, pstatus = pending_outcome
+        response = _direct_response(mode=request.mode, text=text, provider_status=pstatus, suggested=[])
+        window.add_message("assistant", text)
+        log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
+        return response
+
     intent = classify(request.message)
 
     if intent.type == "write":
@@ -228,8 +328,14 @@ async def chat(
         log_action("VERONICA", f"chat:{request.mode.value}:write:{kind}", "low", True, message_text[:240])
         return response
 
-    if intent.type == "read":
+    if intent.type in ("read", "social"):
         message_text = intent.payload.get("message", "")
+        # Store partial calendar so the follow-up time message can complete it
+        if intent.payload.get("kind") == "calendar_need_info" and intent.payload.get("partial"):
+            save_pending_action(session_id, {
+                "type": "calendar_partial",
+                "partial": intent.payload["partial"],
+            })
         response = _direct_response(
             mode=request.mode,
             text=message_text,
@@ -240,15 +346,47 @@ async def chat(
             ],
         )
         window.add_message("assistant", message_text)
-        log_action("VERONICA", f"chat:{request.mode.value}:read", "low", True, message_text[:240])
+        log_action("VERONICA", f"chat:{request.mode.value}:{intent.type}", "low", True, message_text[:240])
         return response
 
     tool_results: list[dict] = []
     if intent.type == "tool":
         tool_name = intent.payload.get("tool")
         args = intent.payload.get("args") or {}
+
+        # ── Confirm-before-act flow (email + calendar) ─────────────────────
+        if intent.payload.get("confirm_first"):
+            if tool_name == "gmail_send":
+                to = args.get("to", "")
+                subj = args.get("subject", "")
+                body = args.get("body", "")
+                preview = f"To: {to}\nSubject: {subj}\n\n{body}"
+                save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
+                text = f"Here's the draft, sir:\n\n{preview}\n\nSend this?"
+            elif tool_name == "calendar_create":
+                title = args.get("title", "")
+                start = args.get("start_datetime", "")
+                attendees = args.get("attendees") or []
+                with_str = f"\nAttendees: {', '.join(attendees)}" if attendees else ""
+                preview = f"Title: {title}\nTime: {start}{with_str}"
+                save_pending_action(session_id, {"type": "calendar_confirm", "tool": "calendar_create", "args": args})
+                text = f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?"
+            else:
+                text = None
+            if text:
+                pstatus = "draft_preview" if tool_name == "gmail_send" else "calendar_preview"
+                response = _direct_response(mode=request.mode, text=text, provider_status=pstatus,
+                                            suggested=["Yes, do it", "Cancel"])
+                window.add_message("assistant", text)
+                log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
+                return response
+
         if tool_name in TOOL_REGISTRY:
-            tool_results.append(await execute_tool(tool_name, args))
+            result = await execute_tool(tool_name, args)
+            tool_results.append(result)
+            # After a successful draft → store so "send it" works next turn
+            if tool_name == "gmail_draft" and result.get("ok"):
+                save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
 
     forced_protocol = intent.payload.get("protocol") if intent.type == "protocol" else None
 
@@ -286,6 +424,9 @@ async def chat_stream(
     if float(window.get_context()["utilization_pct"]) > 90:
         window.compress_old_messages(keep_last=3)
 
+    # ── Pending email confirmation check ────────────────────────────────────
+    pending_outcome = await _handle_pending_confirmation(session_id, request.message)
+
     intent = classify(request.message)
 
     async def emit_single(text: str, provider_status: str) -> "StreamingResponse":
@@ -315,18 +456,61 @@ async def chat_stream(
         log_action("VERONICA", f"chat:{request.mode.value}:write:{kind}", "low", True, message_text[:240])
         return await emit_single(message_text, f"direct_write:{kind}")
 
-    if intent.type == "read":
+    if intent.type in ("read", "social"):
         message_text = intent.payload.get("message", "")
+        if intent.payload.get("kind") == "calendar_need_info" and intent.payload.get("partial"):
+            save_pending_action(session_id, {
+                "type": "calendar_partial",
+                "partial": intent.payload["partial"],
+            })
         window.add_message("assistant", message_text)
-        log_action("VERONICA", f"chat:{request.mode.value}:read", "low", True, message_text[:240])
+        log_action("VERONICA", f"chat:{request.mode.value}:{intent.type}", "low", True, message_text[:240])
         return await emit_single(message_text, "direct_data")
+
+    # ── Emit pending confirmation result (stream) ────────────────────────────
+    if pending_outcome is not None:
+        text, pstatus = pending_outcome
+        window.add_message("assistant", text)
+        log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
+        return await emit_single(text, pstatus)
 
     tool_results: list[dict] = []
     if intent.type == "tool":
         tool_name = intent.payload.get("tool")
         args = intent.payload.get("args") or {}
+
+        # ── Confirm-before-act flow (email + calendar, stream) ─────────────
+        if intent.payload.get("confirm_first"):
+            if tool_name == "gmail_send":
+                to = args.get("to", "")
+                subj = args.get("subject", "")
+                body = args.get("body", "")
+                preview = f"To: {to}\nSubject: {subj}\n\n{body}"
+                save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
+                text = f"Here's the draft, sir:\n\n{preview}\n\nSend this?"
+                pstatus = "draft_preview"
+            elif tool_name == "calendar_create":
+                title = args.get("title", "")
+                start = args.get("start_datetime", "")
+                attendees = args.get("attendees") or []
+                with_str = f"\nAttendees: {', '.join(attendees)}" if attendees else ""
+                preview = f"Title: {title}\nTime: {start}{with_str}"
+                save_pending_action(session_id, {"type": "calendar_confirm", "tool": "calendar_create", "args": args})
+                text = f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?"
+                pstatus = "calendar_preview"
+            else:
+                text = None
+                pstatus = "draft_preview"
+            if text:
+                window.add_message("assistant", text)
+                log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
+                return await emit_single(text, pstatus)
+
         if tool_name in TOOL_REGISTRY:
-            tool_results.append(await execute_tool(tool_name, args))
+            result = await execute_tool(tool_name, args)
+            tool_results.append(result)
+            if tool_name == "gmail_draft" and result.get("ok"):
+                save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
 
     forced_protocol = intent.payload.get("protocol") if intent.type == "protocol" else None
 
@@ -428,6 +612,8 @@ async def actions(
 async def add_note(request: NoteCreateRequest) -> dict[str, object]:
     note = create_note(request.content)
     await hot_cache.invalidate_pattern("notes:")
+    if not note.get("duplicate"):
+        log_entry("note_created", request.content[:80], request.content)
     return {"status": "duplicate" if note.get("duplicate") else "created", "item": note}
 
 
@@ -454,6 +640,8 @@ async def notes(
 async def add_task(request: TaskCreateRequest) -> dict[str, object]:
     task = create_task(request.description, request.priority)
     await hot_cache.invalidate_pattern("tasks:")
+    if not task.get("duplicate"):
+        log_entry("task_created", request.description, "", {"priority": request.priority})
     return {"status": "duplicate" if task.get("duplicate") else "created", "item": task}
 
 
@@ -483,6 +671,8 @@ async def patch_task(task_id: int, request: TaskUpdateRequest) -> dict[str, obje
     if item is None:
         raise HTTPException(status_code=404, detail="Task not found")
     await hot_cache.invalidate_pattern("tasks:")
+    if request.status == "done" and item:
+        log_entry("task_completed", item.get("description", "Task"), "", {"task_id": task_id})
     return {"status": "updated", "item": item}
 
 
@@ -603,3 +793,239 @@ async def tts(payload: dict) -> StreamingResponse:
                     yield chunk
 
     return StreamingResponse(proxy(), media_type="audio/mpeg")
+
+
+# ── OAuth ─────────────────────────────────────────────────────────────────
+
+_GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+]
+
+
+def _build_oauth_flow():
+    if not settings.google_client_id or not settings.google_client_secret:
+        return None
+    try:
+        from google_auth_oauthlib.flow import Flow  # type: ignore[import]
+
+        return Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": [settings.google_redirect_uri],
+                }
+            },
+            scopes=_GOOGLE_SCOPES,
+            redirect_uri=settings.google_redirect_uri,
+        )
+    except ImportError:
+        return None
+
+
+@app.get("/oauth/status")
+async def oauth_status() -> dict[str, object]:
+    connected = get_connected_services()
+    google_configured = bool(settings.google_client_id and settings.google_client_secret)
+    return {
+        "google_configured": google_configured,
+        "connected": connected,
+        "gmail": "google" in connected,
+        "calendar": "google" in connected,
+    }
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Generate a PKCE (code_verifier, code_challenge) pair."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+@app.get("/oauth/google/start")
+async def oauth_google_start():
+    flow = _build_oauth_flow()
+    if not flow:
+        raise HTTPException(
+            status_code=503,
+            detail="Google OAuth not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to apps/api/.env",
+        )
+
+    state = secrets.token_urlsafe(16)
+    verifier, challenge = _pkce_pair()
+    _oauth_states[state] = verifier  # store verifier keyed by state
+
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=state,
+        code_challenge=challenge,
+        code_challenge_method="S256",
+    )
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/oauth/google/callback")
+async def oauth_google_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    if error:
+        log.warning("OAuth error from Google: %s", error)
+        return RedirectResponse(url=f"{settings.frontend_url}?oauth_error={error}")
+
+    if not code or state not in _oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid OAuth callback — missing code or state")
+
+    verifier = _oauth_states.pop(state)
+
+    flow = _build_oauth_flow()
+    if not flow:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+
+    try:
+        # Allow HTTP in local development (oauthlib enforces HTTPS by default)
+        os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+        flow.fetch_token(
+            authorization_response=str(request.url),
+            code_verifier=verifier,
+        )
+        creds = flow.credentials
+        save_oauth_token("google", creds.to_json())
+        log_entry("oauth_connected", "Google account connected", "Gmail and Calendar access granted")
+    except Exception as exc:
+        log.warning("OAuth token exchange failed: %s", exc)
+        raise HTTPException(status_code=400, detail=f"OAuth exchange failed: {exc}") from exc
+
+    return RedirectResponse(url=f"{settings.frontend_url}?connected=google")
+
+
+@app.delete("/oauth/google")
+async def oauth_google_disconnect() -> dict[str, object]:
+    deleted = delete_oauth_token("google")
+    if deleted:
+        log_entry("oauth_disconnected", "Google account disconnected")
+    return {"status": "disconnected" if deleted else "not_connected"}
+
+
+# ── Email ─────────────────────────────────────────────────────────────────
+
+
+@app.get("/email/inbox")
+async def email_inbox(max_results: int = Query(10, ge=1, le=50)) -> dict[str, object]:
+    from app.gmail import list_inbox
+    return await list_inbox(max_results=max_results)
+
+
+@app.get("/email/message/{message_id}")
+async def email_message(message_id: str) -> dict[str, object]:
+    from app.gmail import read_email
+    return await read_email(message_id=message_id)
+
+
+@app.post("/email/send")
+async def email_send(payload: dict) -> dict[str, object]:
+    to = (payload or {}).get("to", "").strip()
+    subject = (payload or {}).get("subject", "").strip()
+    body = (payload or {}).get("body", "").strip()
+    if not to or not subject:
+        raise HTTPException(status_code=400, detail="to and subject required")
+    from app.gmail import send_email
+    result = await send_email(to=to, subject=subject, body=body)
+    if result.get("ok"):
+        log_entry("email_sent", f"Email to {to}", subject, {"to": to, "subject": subject})
+    return result
+
+
+@app.post("/email/draft")
+async def email_draft(payload: dict) -> dict[str, object]:
+    to = (payload or {}).get("to", "").strip()
+    subject = (payload or {}).get("subject", "").strip()
+    body = (payload or {}).get("body", "").strip()
+    if not subject:
+        raise HTTPException(status_code=400, detail="subject required")
+    from app.gmail import draft_email
+    return await draft_email(to=to, subject=subject, body=body)
+
+
+@app.get("/email/search")
+async def email_search(q: str = Query(..., min_length=1)) -> dict[str, object]:
+    from app.gmail import search_email
+    return await search_email(query=q)
+
+
+# ── Calendar ──────────────────────────────────────────────────────────────
+
+
+@app.get("/calendar/events")
+async def calendar_events_route(days: int = Query(7, ge=1, le=30)) -> dict[str, object]:
+    from app.gcal import list_events
+    return await list_events(days_ahead=days)
+
+
+@app.post("/calendar/events")
+async def calendar_create_event(payload: dict) -> dict[str, object]:
+    title = (payload or {}).get("title", "").strip()
+    start = (payload or {}).get("start", "").strip()
+    end = (payload or {}).get("end", "").strip()
+    if not title or not start or not end:
+        raise HTTPException(status_code=400, detail="title, start, end required")
+    from app.gcal import create_event
+    result = await create_event(
+        title=title,
+        start_datetime=start,
+        end_datetime=end,
+        description=(payload or {}).get("description", ""),
+        attendees=(payload or {}).get("attendees"),
+    )
+    if result.get("ok"):
+        log_entry("meeting_scheduled", title, f"Start: {start}", {"attendees": (payload or {}).get("attendees", [])})
+    return result
+
+
+@app.get("/calendar/freebusy")
+async def calendar_freebusy(
+    duration: int = Query(60, ge=15, le=480),
+    days: int = Query(7, ge=1, le=14),
+) -> dict[str, object]:
+    from app.gcal import find_free_slot
+    return await find_free_slot(duration_minutes=duration, days_ahead=days)
+
+
+# ── Life Log ──────────────────────────────────────────────────────────────
+
+
+@app.get("/life-log")
+async def life_log(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    entry_type: str | None = Query(default=None),
+) -> dict[str, object]:
+    items, total = list_log_entries(skip=skip, limit=limit, entry_type=entry_type)
+    return {
+        "items": items,
+        "pagination": {"skip": skip, "limit": limit, "total": total, "has_more": skip + limit < total},
+    }
+
+
+@app.post("/life-log")
+async def add_life_log_entry(payload: dict) -> dict[str, object]:
+    entry_type = (payload or {}).get("entry_type", "note").strip()
+    title = (payload or {}).get("title", "").strip()
+    content = (payload or {}).get("content", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    entry = log_entry(entry_type, title, content, (payload or {}).get("metadata"))
+    return {"status": "created", "item": entry}
