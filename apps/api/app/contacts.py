@@ -6,43 +6,55 @@ from typing import Any
 from app.db import get_db, utcnow
 
 
-def upsert_contact(name: str, email: str, source: str = "auto") -> dict[str, Any]:
+def _normalize_phone(phone: str) -> str:
+    """Strip spaces/dashes, keep leading +."""
+    p = phone.strip()
+    if not p:
+        return ""
+    has_plus = p.startswith("+")
+    digits = re.sub(r"[^\d]", "", p)
+    return ("+" + digits) if has_plus else digits
+
+
+def upsert_contact(name: str, email: str, source: str = "auto", phone: str = "") -> dict[str, Any]:
     """Insert or bump interaction count for a contact."""
     name = name.strip()
     email = email.strip().lower()
+    phone = _normalize_phone(phone)
     if not name or not email or "@" not in email:
         return {}
     now = utcnow()
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO contacts (name, email, source, interaction_count, last_seen, created_at)
-            VALUES (?, ?, ?, 1, ?, ?)
+            INSERT INTO contacts (name, email, phone, source, interaction_count, last_seen, created_at)
+            VALUES (?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 interaction_count = interaction_count + 1,
                 last_seen = excluded.last_seen,
-                name = CASE WHEN excluded.name != '' THEN excluded.name ELSE name END
+                name = CASE WHEN excluded.name != '' THEN excluded.name ELSE name END,
+                phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE phone END
             """,
-            (name, email, source, now, now),
+            (name, email, phone, source, now, now),
         )
-    return {"name": name, "email": email}
+    return {"name": name, "email": email, "phone": phone}
 
 
 def find_contacts(query: str, limit: int = 5) -> list[dict[str, Any]]:
-    """Fuzzy name/email search — returns best matches."""
+    """Fuzzy name/email/phone search — returns best matches."""
     q = query.strip().lower()
     if not q:
         return []
     with get_db() as conn:
         rows = conn.execute(
             """
-            SELECT name, email, interaction_count, last_seen
+            SELECT name, email, phone, interaction_count, last_seen
             FROM contacts
-            WHERE lower(name) LIKE ? OR lower(email) LIKE ?
+            WHERE lower(name) LIKE ? OR lower(email) LIKE ? OR phone LIKE ?
             ORDER BY interaction_count DESC, last_seen DESC
             LIMIT ?
             """,
-            (f"%{q}%", f"%{q}%", limit),
+            (f"%{q}%", f"%{q}%", f"%{q}%", limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -53,10 +65,20 @@ def resolve_name_to_email(name: str) -> str | None:
     return matches[0]["email"] if matches else None
 
 
+def resolve_name_to_phone(name: str) -> str | None:
+    """Return the best-matching phone number for a display name, or None if not found."""
+    matches = find_contacts(name, limit=3)
+    for m in matches:
+        phone = (m.get("phone") or "").strip()
+        if phone:
+            return phone
+    return None
+
+
 def list_contacts(limit: int = 100) -> list[dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT name, email, source, interaction_count, last_seen FROM contacts "
+            "SELECT name, email, phone, source, interaction_count, last_seen FROM contacts "
             "ORDER BY interaction_count DESC, last_seen DESC LIMIT ?",
             (limit,),
         ).fetchall()

@@ -110,6 +110,7 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             email TEXT NOT NULL UNIQUE,
+            phone TEXT,
             source TEXT NOT NULL DEFAULT 'auto',
             interaction_count INTEGER NOT NULL DEFAULT 1,
             last_seen TEXT NOT NULL,
@@ -195,6 +196,13 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_pomodoro_created ON pomodoro_sessions (created_at DESC);
         """
     )
+
+    # Migrate: add phone column to contacts if it doesn't exist yet
+    try:
+        conn.execute("ALTER TABLE contacts ADD COLUMN phone TEXT")
+        conn.commit()
+    except Exception:
+        pass  # already exists
 
     # Purge stale pending actions older than 24 hours
     conn.execute(

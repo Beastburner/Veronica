@@ -194,6 +194,35 @@ async def web_search(query: str) -> dict[str, Any]:
     }
 
 
+async def news_topic(topic: str) -> dict[str, Any]:
+    """Search RSS feeds for a topic; fall back to web_search if nothing found."""
+    from app.news import fetch_all_feeds
+    topic_lower = topic.lower()
+    keywords = topic_lower.split()
+    try:
+        articles = await asyncio.to_thread(fetch_all_feeds, 10)
+        matches = [
+            a for a in articles
+            if any(kw in (a.get("title") or "").lower() or kw in (a.get("summary") or "").lower()
+                   for kw in keywords)
+        ]
+        if matches:
+            return {
+                "tool": "news_topic",
+                "ok": True,
+                "topic": topic,
+                "result": [
+                    {"title": a["title"], "link": a["link"], "feed": a.get("feed_title", ""), "published": a.get("published", "")}
+                    for a in matches[:5]
+                ],
+            }
+    except Exception as exc:
+        log.warning("news_topic rss error: %s", exc)
+
+    # RSS had nothing — try live web search
+    return await web_search(f"latest {topic} news")
+
+
 # ── Safe shell command (whitelist) ─────────────────────────────────────────
 
 
@@ -595,6 +624,21 @@ async def whatsapp_messages(limit: int = 20) -> dict[str, Any]:
     return await wa_messages(limit)
 
 
+async def whatsapp_contacts(query: str = "") -> dict[str, Any]:
+    from app.whatsapp_client import wa_contacts
+    return await wa_contacts(query)
+
+
+async def whatsapp_search_contact(name: str) -> dict[str, Any]:
+    from app.whatsapp_client import wa_search_contact
+    return await wa_search_contact(name)
+
+
+async def whatsapp_conversation(contact: str) -> dict[str, Any]:
+    from app.whatsapp_client import wa_conversation
+    return await wa_conversation(contact)
+
+
 async def whatsapp_send(to: str, text: str) -> dict[str, Any]:
     from app.whatsapp_client import wa_send
     return await wa_send(to, text)
@@ -622,6 +666,27 @@ async def contacts_list() -> dict[str, Any]:
     return {"tool": "contacts_list", "ok": True, "result": list_contacts()}
 
 
+async def contact_save_phone(name: str, phone: str) -> dict[str, Any]:
+    from app.contacts import find_contacts, _normalize_phone
+    from app.db import get_db
+    matches = find_contacts(name, limit=1)
+    norm = _normalize_phone(phone)
+    if not norm:
+        return {"tool": "contact_save_phone", "ok": False, "error": "invalid phone number"}
+    if matches:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE contacts SET phone=? WHERE lower(name) LIKE ?",
+                (norm, f"%{name.lower()}%"),
+            )
+        return {"tool": "contact_save_phone", "ok": True, "name": matches[0]["name"], "phone": norm}
+    # Create a minimal contact with just name + phone (email placeholder)
+    placeholder_email = f"{name.lower().replace(' ', '.')}@whatsapp.local"
+    from app.contacts import upsert_contact
+    upsert_contact(name, placeholder_email, source="manual", phone=norm)
+    return {"tool": "contact_save_phone", "ok": True, "name": name, "phone": norm, "created": True}
+
+
 # ── Registry ────────────────────────────────────────────────────────────────
 
 ToolFn = Callable[..., Awaitable[dict[str, Any]]]
@@ -631,6 +696,7 @@ REGISTRY: dict[str, ToolFn] = {
     "calculator": calculator,
     "get_weather": get_weather,
     "web_search": web_search,
+    "news_topic": news_topic,
     "run_system_command": run_system_command,
     "get_open_issues": get_open_issues,
     "create_issue": create_issue,
@@ -684,12 +750,16 @@ REGISTRY: dict[str, ToolFn] = {
     # WhatsApp
     "whatsapp_status": whatsapp_status,
     "whatsapp_messages": whatsapp_messages,
+    "whatsapp_contacts": whatsapp_contacts,
+    "whatsapp_search_contact": whatsapp_search_contact,
+    "whatsapp_conversation": whatsapp_conversation,
     "whatsapp_send": whatsapp_send,
     # System alerts
     "system_alerts": system_alerts,
     # Contacts
     "contacts_search": contacts_search,
     "contacts_list": contacts_list,
+    "contact_save_phone": contact_save_phone,
 }
 
 

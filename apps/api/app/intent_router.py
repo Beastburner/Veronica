@@ -23,6 +23,8 @@ log = logging.getLogger("veronica.intent")
 IntentType = Literal["write", "read", "tool", "protocol", "llm", "social"]
 
 
+
+
 @dataclass
 class IntentResult:
     type: IntentType
@@ -329,6 +331,13 @@ _EMAIL_ACTION_KW = (
     # write variants
     "write email", "write an email", "write mail", "write a mail",
 )
+_WA_ACTION_KW = (
+    "send whatsapp", "send a whatsapp", "send wa ", "send a wa ",
+    "whatsapp to", "whatsapp message", "wa message",
+    "message on whatsapp", "message via whatsapp", "message over whatsapp",
+    "text on whatsapp", "text via whatsapp",
+)
+
 _CALENDAR_ACTION_KW = (
     "schedule meeting", "schedule a meeting", "create event", "create a meeting",
     "book meeting", "book a meeting", "set up meeting", "set up a meeting",
@@ -343,7 +352,8 @@ def _llm_action_intent(message: str) -> IntentResult | None:
     is_email = any(kw in lowered for kw in _EMAIL_ACTION_KW)
     is_calendar = any(kw in lowered for kw in _CALENDAR_ACTION_KW)
     is_commit = any(kw in lowered for kw in _GH_COMMIT_KW)
-    if not is_email and not is_calendar and not is_commit:
+    is_whatsapp = any(kw in lowered for kw in _WA_ACTION_KW)
+    if not is_email and not is_calendar and not is_commit and not is_whatsapp:
         return None
 
     if is_commit:
@@ -379,12 +389,53 @@ def _llm_action_intent(message: str) -> IntentResult | None:
 
     now = current_local_time()
 
+    if is_whatsapp:
+        from app.config import settings as _cfg
+        sender = (_cfg.sender_name or "Parth").split()[0]  # first name only
+        schema = (
+            'Schema: {"action": "send_whatsapp" | "none", "to": string, "text": string}. '
+            'Extract the recipient name or phone number (to). '
+            f'Write the WhatsApp message text as if {sender} is typing it directly — first person, sent TO the recipient. '
+            'Rules: '
+            '1. NEVER say this message is automated, sent by AI, or "from Veronica the assistant". '
+            '   If the user wants to talk about a project or thing called "Veronica", mention it freely by name. '
+            f'2. NEVER refer to {sender} in third person. Write AS {sender}, not ABOUT {sender}. '
+            '3. "You/him/her/they" in the user\'s instruction refers to THE RECIPIENT — the person receiving the message. '
+            '   For example: "tell him he is not authorised" → write a message TO him saying "you\'re not authorised". '
+            '4. Write like a real text — 2-3 sentences max. Not a wall of text. '
+            '5. No formal sign-offs. No "Dear", no "Best regards", no lengthy explanations. '
+            '6. If the user gave an explicit message, write it naturally — don\'t over-expand or add meta-commentary. '
+            '7. Apply any specified tone (sarcastic, funny, serious, formal, aggressive, chill) to the message. '
+            '8. If the user quotes what the RECIPIENT said (e.g. "on his reply [...]", "he said [...]", "replying to [...]"), '
+            '   that quoted text is CONTEXT — compose a witty/appropriate reply TO it, never forward it verbatim. '
+            '9. If there is ZERO content — no topic, no subject, just "send a message" with nothing to say — '
+            'return {"action": "none", "to": "", "text": ""}. '
+            'If there IS a named topic (even vague, like "about Veronica" or "about the project"), write something about it. '
+            'If no recipient can be determined, return {"action": "none", "to": "", "text": ""}.'
+        )
+        payload = call_json(f"User message: {message!r}", schema_hint=schema, max_tokens=200)
+        if not payload or payload.get("action") == "none":
+            return None
+        to = (payload.get("to") or "").strip()
+        text = (payload.get("text") or "").strip()
+        if not to or not text:
+            return None
+        return IntentResult("tool", {
+            "tool": "whatsapp_send",
+            "args": {"to": to, "text": text},
+            "confirm_first": True,
+        })
+
     if is_email:
+        from app.config import settings as _cfg
+        sender = _cfg.sender_name or "Parth"
         schema = (
             'Schema: {"action": "send_email" | "draft_email" | "none", '
             '"to": string, "subject": string, "body": string}. '
             'Extract the recipient (to), generate a concise subject line, '
-            'and write a complete professional email body based on the user\'s intent. '
+            f'and write a complete professional email body based on the user\'s intent. '
+            f'The sender\'s name is "{sender}" — sign off with "Best regards,\\n{sender}". '
+            'NEVER use placeholder text like [Your Name], [Name], or [Signature]. '
             'Use "draft_email" ONLY when the user explicitly says "draft". '
             'For "compose", "write", "send", or any other phrasing → use "send_email". '
             'If no valid email recipient is present, return {"action": "none", "to": "", "subject": "", "body": ""}.'
@@ -424,13 +475,10 @@ def _llm_action_intent(message: str) -> IntentResult | None:
                 pass
         if action == "draft_email":
             return IntentResult("tool", {"tool": "gmail_draft", "args": {"to": to, "subject": subject, "body": body}})
-        _EXPLICIT_SEND_KW = ("send email", "send an email", "send mail", "send a mail",
-                             "email to", "mail to", "shoot an email", "shoot a mail")
-        explicit_send = any(kw in lowered for kw in _EXPLICIT_SEND_KW)
         return IntentResult("tool", {
             "tool": "gmail_send",
             "args": {"to": to, "subject": subject, "body": body},
-            "confirm_first": not explicit_send,
+            "confirm_first": True,
         })
 
     if action == "create_event":
@@ -672,23 +720,51 @@ _WA_MESSAGES_RE = re.compile(
     r"(?:show|get|check|read)\s+(?:my\s+)?(?:whatsapp|wa)\s+(?:messages?|chats?|inbox)",
     re.IGNORECASE,
 )
+_WA_CONTACTS_RE = re.compile(
+    r"(?:show|list|get|search|find|check)\s+(?:my\s+)?(?:whatsapp|wa)\s+contacts?(?:\s+(?:named?|for|like)\s+(.+))?",
+    re.IGNORECASE,
+)
+_WA_FIND_CONTACT_RE = re.compile(
+    r"(?:find|search|look\s+up)\s+(?:whatsapp\s+)?contact\s+(?:named?\s+)?(.+)",
+    re.IGNORECASE,
+)
+_PRONOUNS = frozenset({"him", "her", "them", "it", "he", "she", "they"})
+
+# "reply saying X" / "reply to him saying X" / "reply to Pranav saying X"
+# Requires explicit text after "saying/with/:" — otherwise falls through to check-reply or LLM
+_WA_REPLY_RE = re.compile(
+    r"(?:reply|respond|write\s+back|text\s+back)"
+    r"(?:\s+to\s+(?P<name>[A-Za-z][A-Za-z\s]{1,30}?))?"
+    r"(?:\s+(?:saying|with|:))\s+(?P<text>.+)",
+    re.IGNORECASE,
+)
+# "what did Pranav reply?" / "reply to Pranav on his reply" / "did he reply?"
+# Also catches "reply to [name] on his reply" (show conversation so user can decide what to say)
+_WA_CHECK_REPLY_RE = re.compile(
+    r"(?:"
+    r"what(?:'s|\s+has|\s+did)?\s+(?P<n1>[A-Za-z][A-Za-z\s]{1,30}?)\s+(?:reply|said|say|message|text)"
+    r"|did\s+(?P<n2>[A-Za-z][A-Za-z\s]{1,30}?)\s+(?:reply|respond|message|text)"
+    r"|any\s+(?:reply|message|text)\s+(?:from|by)\s+(?P<n3>[A-Za-z][A-Za-z\s]{1,30})"
+    r"|(?:check|show)\s+(?P<n4>[A-Za-z][A-Za-z\s]{1,30}?)(?:'s)?\s+(?:reply|message|text|response)"
+    r"|reply\s+to\s+(?P<n5>[A-Za-z][A-Za-z\s]{1,30}?)\s+on\s+(?:his|her|their)\s+(?:reply|message|text|response)"
+    r"|what\s+did\s+(?:he|she|they)\s+(?:reply|say|text|respond)"
+    r"|did\s+(?:he|she|they)\s+(?:reply|respond|text|message)"
+    r"|any\s+(?:reply|message|text|response)\s+(?:from\s+)?(?:him|her|them)"
+    r")",
+    re.IGNORECASE,
+)
 _WA_SEND_RE = re.compile(
     r"(?:send\s+(?:a\s+)?(?:whatsapp|wa)\s+(?:message\s+)?(?:to\s+)?|whatsapp\s+|message\s+(?:on\s+whatsapp\s+)?)"
     r"(\+?[\d][\d\s\-]{6,14})"   # phone number
     r"[\s:,]+(.+)",
     re.IGNORECASE,
 )
-# Name-based WA send — "send whatsapp to Parth Soni saying hi"
-_WA_SEND_NAME_RE = re.compile(
-    r"(?:send\s+(?:a\s+)?(?:whatsapp|wa)\s+(?:message\s+)?to\s+|whatsapp\s+(?:message\s+)?to\s+)"
-    r"([A-Za-z][A-Za-z\s]{1,40}?)"
-    r"(?:\s+saying\s+|\s+that\s+|\s*:\s*|\s+with(?:\s+message)?\s*:\s*)"
-    r"(.+)",
+# Contact phone save: "save Parth's number +91XXXXXXXXXX" / "Parth's whatsapp is +91..."
+_CONTACT_PHONE_RE = re.compile(
+    r"(?:save|set|store|add|update|remember)\s+(?:(?P<n1>[A-Za-z][A-Za-z\s]{1,30}?)(?:'s|s)?\s+(?:whatsapp\s+)?(?:number|phone|contact)\s+(?:is\s+)?|"
+    r"(?:whatsapp\s+)?(?:number|phone)\s+(?:for|of)\s+(?P<n2>[A-Za-z][A-Za-z\s]{1,30}?)\s+(?:is\s+)?)"
+    r"(\+?[\d][\d\s\-]{6,14})",
     re.IGNORECASE,
-)
-_WA_SEND_KW = (
-    "send whatsapp", "send a whatsapp", "whatsapp message", "send wa",
-    "message on whatsapp", "text on whatsapp", "whatsapp to",
 )
 # GitHub issue creation
 _GH_CREATE_ISSUE_RE = re.compile(
@@ -775,11 +851,46 @@ def _tool_intent(message: str) -> IntentResult | None:
         if not _SPOTIFY_PLAY_EXCLUDES.match(query):
             return IntentResult("tool", {"tool": "spotify_play", "args": {"query": query}})
 
+    m = _CONTACT_PHONE_RE.search(stripped)
+    if m:
+        contact_name = (m.group("n1") or m.group("n2") or "").strip()
+        phone_raw = m.group(3).strip()
+        if contact_name and phone_raw:
+            return IntentResult("tool", {"tool": "contact_save_phone", "args": {"name": contact_name, "phone": phone_raw}})
+
     if _WA_STATUS_RE.search(stripped):
         return IntentResult("tool", {"tool": "whatsapp_status", "args": {}})
 
     if _WA_MESSAGES_RE.search(stripped):
         return IntentResult("tool", {"tool": "whatsapp_messages", "args": {}})
+
+    # Check reply / conversation — named contact or pronoun (pronoun → __last__)
+    m = _WA_CHECK_REPLY_RE.search(stripped)
+    if m:
+        raw = (m.group("n1") or m.group("n2") or m.group("n3") or m.group("n4") or m.group("n5") or "").strip()
+        contact = "__last__" if (not raw or raw.lower() in _PRONOUNS) else raw
+        return IntentResult("tool", {"tool": "whatsapp_conversation", "args": {"contact": contact}})
+
+    # "reply saying X" / "reply to Pranav saying X" — requires explicit text
+    m = _WA_REPLY_RE.search(stripped)
+    if m:
+        text = (m.group("text") or "").strip()
+        raw_name = (m.group("name") or "").strip()
+        to = "__last__" if (not raw_name or raw_name.lower() in _PRONOUNS) else raw_name
+        return IntentResult("tool", {
+            "tool": "whatsapp_send",
+            "args": {"to": to, "text": text},
+            "confirm_first": True,
+        })
+
+    m = _WA_FIND_CONTACT_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "whatsapp_search_contact", "args": {"name": m.group(1).strip()}})
+
+    m = _WA_CONTACTS_RE.search(stripped)
+    if m:
+        q = (m.group(1) or "").strip()
+        return IntentResult("tool", {"tool": "whatsapp_contacts", "args": {"query": q}})
 
     m = _WA_SEND_RE.search(stripped)
     if m:
@@ -791,15 +902,6 @@ def _tool_intent(message: str) -> IntentResult | None:
             "confirm_first": True,
         })
 
-    m = _WA_SEND_NAME_RE.search(stripped)
-    if m:
-        name = m.group(1).strip()
-        text = m.group(2).strip()
-        return IntentResult("tool", {
-            "tool": "whatsapp_send",
-            "args": {"to": name, "text": text},
-            "confirm_first": True,
-        })
 
     m = _GH_CREATE_ISSUE_RE.search(stripped)
     if m:
@@ -843,11 +945,11 @@ def _tool_intent(message: str) -> IntentResult | None:
     if m:
         return IntentResult("tool", {"tool": "habit_log", "args": {"name": m.group(1).strip()}})
 
-    # Topic-specific news → web_search for live results
+    # Topic-specific news → check RSS feeds first, fall back to web_search
     m = _TOPIC_NEWS_RE.search(stripped)
     if m:
         topic = (m.group(1) or m.group(2) or m.group(3) or "").strip()
-        return IntentResult("tool", {"tool": "web_search", "args": {"query": f"latest {topic} news"}})
+        return IntentResult("tool", {"tool": "news_topic", "args": {"topic": topic}})
 
     # Generic news digest (HN, Verge, etc.)
     if _NEWS_RE.search(stripped):

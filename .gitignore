@@ -37,3 +37,16 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+# WhatsApp
+apps/whatsapp/.ww-session/
+apps/whatsapp/.wwebjs_cache/
+apps/whatsapp/.wwebjs_auth/
+apps/whatsapp/.env
+.ww-session/
+.wwebjs_cache/
+.wwebjs_auth/
+
+# Tooling
+.claude/
+.claude_session.md

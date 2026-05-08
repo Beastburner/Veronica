@@ -83,6 +83,57 @@ logging.basicConfig(
 log = logging.getLogger("veronica")
 
 
+async def _resolve_wa_recipient(to: str) -> tuple[str, str, bool]:
+    """
+    Resolve a WhatsApp recipient to (display_label, value_to_send, number_verified).
+    number_verified=False means we couldn't confirm the number — caller should warn but still allow.
+    value_to_send is always set: a confirmed +number, or the original name for Node.js to resolve.
+    """
+    import re as _re
+    is_number = bool(_re.match(r"^\+?[\d\s\-\(\)]+$", to.strip()) and
+                     len(_re.sub(r"\D", "", to)) >= 7)
+    if is_number:
+        digits = _re.sub(r"[\s\-\(\)]", "", to).lstrip("+")
+        return (f"+{digits}", f"+{digits}", True)
+
+    # Try WhatsApp contacts API (live)
+    try:
+        from app.whatsapp_client import wa_search_contact
+        result = await wa_search_contact(to)
+        if result.get("ok"):
+            contact = result["contact"]
+            name = contact.get("name", to)
+            number = (contact.get("number") or "").strip().lstrip("+")
+            if number:
+                # Persist to local DB so future lookups work even when WhatsApp is offline
+                try:
+                    from app.contacts import upsert_contact
+                    placeholder = f"{name.lower().replace(' ', '.')}@whatsapp.local"
+                    upsert_contact(name, placeholder, source="whatsapp", phone=f"+{number}")
+                except Exception:
+                    pass
+                return (f"{name} (+{number})", f"+{number}", True)
+            # Group or contact found by name — use the WhatsApp chat ID directly
+            chat_id = (contact.get("id") or "").strip()
+            if chat_id:
+                label = f"{name} (group)" if contact.get("isGroup") else name
+                return (label, chat_id, True)
+    except Exception:
+        pass
+
+    # Fallback: local contacts DB phone field
+    try:
+        from app.contacts import resolve_name_to_phone
+        phone = resolve_name_to_phone(to)
+        if phone:
+            return (f"{to} ({phone})", phone, True)
+    except Exception:
+        pass
+
+    # Could not verify number — pass name through to Node.js and warn user
+    return (to, to, False)
+
+
 def _compact_old_summaries(threshold: int = 5) -> int:
     sessions = list_summary_sessions_with_excess(threshold)
     compacted = 0
@@ -106,6 +157,8 @@ _oauth_states: dict[str, str] = {}
 
 
 _whatsapp_proc: subprocess.Popen | None = None
+# session_id → (display_name, resolved_value) of last successfully sent WA contact
+_last_wa_contact: dict[str, tuple[str, str]] = {}
 
 
 def _whatsapp_already_running() -> bool:
@@ -274,6 +327,8 @@ async def _handle_pending_confirmation(
     if _CONFIRM_RE.match(msg):
         delete_pending_action(session_id)
         tool_args = dict(pending["args"])
+        # Strip metadata fields that aren't tool parameters
+        tool_args.pop("display_name", None)
         # For calendar: resolve attendee names → emails, drop still-unresolved ones
         if ptype == "calendar_confirm" and tool_args.get("attendees"):
             from app.contacts import resolve_name_to_email
@@ -301,7 +356,9 @@ async def _handle_pending_confirmation(
                 return (f"Meeting '{title}' scheduled for {start}.{extra}", "meeting_scheduled")
             if ptype == "wa_confirm":
                 to = pending["args"].get("to", "")
-                return (f"WhatsApp message sent to {to}, sir.", "wa_sent")
+                display_name = pending["args"].get("display_name", to)
+                _last_wa_contact[session_id] = (display_name, to)
+                return (f"WhatsApp message sent to {display_name}, sir.", "wa_sent")
             if ptype == "gh_issue_confirm":
                 r = result.get("result") or {}
                 num = r.get("number", "")
@@ -381,8 +438,8 @@ def _tool_direct_reply(tool: str, result: dict) -> str | None:
         err = result.get("error", "unknown error")
         if tool == "whatsapp_send":
             return f"WhatsApp failed: {err}"
-        if tool == "web_search":
-            q = result.get("query", "that query")
+        if tool in ("web_search", "news_topic"):
+            q = result.get("query") or result.get("topic") or "that query"
             return f"No results found for '{q}', sir."
         labels = {
             "spotify_play": "Spotify", "spotify_toggle": "Spotify",
@@ -438,6 +495,34 @@ def _tool_direct_reply(tool: str, result: dict) -> str | None:
         ready = result.get("ready", False)
         return "WhatsApp is connected and ready, sir." if ready else "WhatsApp is not connected, sir."
 
+    if tool == "whatsapp_search_contact":
+        contact = result.get("contact", {})
+        name = contact.get("name", "")
+        number = contact.get("number", "")
+        return f"Found: {name} — +{number}, sir." if number else f"Contact '{result.get('error', 'not found')}', sir."
+
+    if tool == "whatsapp_conversation":
+        msgs = result.get("messages") or []
+        if not msgs:
+            contact = result.get("contact", "them")
+            return f"No messages found with {contact}, sir."
+        lines = []
+        for m in msgs[:10]:
+            who = "You" if m.get("fromMe") else (m.get("fromName") or m.get("from") or "Them")
+            body = (m.get("body") or "").strip()
+            if body:
+                lines.append(f"{who}: {body}")
+        return "\n".join(lines) if lines else "No messages found, sir."
+
+    if tool == "whatsapp_contacts":
+        contacts = result.get("contacts") or []
+        if not contacts:
+            return "No WhatsApp contacts found, sir."
+        lines = ", ".join(f"{c['name']} (+{c['number']})" for c in contacts[:5] if c.get("number"))
+        total = result.get("total", len(contacts))
+        suffix = f" (+{total - 5} more)" if total > 5 else ""
+        return f"WhatsApp contacts: {lines}{suffix}, sir."
+
     if tool == "create_issue":
         r2 = result.get("result") or {}
         num = r2.get("number", "")
@@ -472,6 +557,13 @@ def _tool_direct_reply(tool: str, result: dict) -> str | None:
             return "No system alerts triggered, sir."
         summary = "; ".join(f"{a['resource']} at {a['value']:.0f}%" for a in alerts[:3])
         return f"Sir, {len(alerts)} alert(s): {summary}."
+
+    if tool == "contact_save_phone":
+        name = result.get("name", "")
+        phone = result.get("phone", "")
+        created = result.get("created", False)
+        action = "saved new contact" if created else "updated contact"
+        return f"{action.capitalize()} — {name}: {phone}, sir."
 
     return None
 
@@ -569,6 +661,14 @@ async def chat(
 
         # ── Confirm-before-act flow (email + calendar + whatsapp + github issue) ─
         if intent.payload.get("confirm_first"):
+            # Resolve __last__ sentinel before confirm preview
+            if tool_name == "whatsapp_send" and args.get("to") == "__last__":
+                last = _last_wa_contact.get(session_id)
+                if last:
+                    args = {**args, "to": last[1]}
+                else:
+                    text = "Who should I reply to? I don't have a recent WhatsApp contact on record."
+                    return _direct_response(mode=request.mode, text=text, provider_status="wa_no_context", suggested=[])
             if tool_name == "gmail_send":
                 to = args.get("to", "")
                 subj = args.get("subject", "")
@@ -596,10 +696,16 @@ async def chat(
                 text = f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?"
                 pstatus = "calendar_preview"
             elif tool_name == "whatsapp_send":
-                to = args.get("to", "")
+                raw_to = args.get("to", "")
                 msg = args.get("text", "")
-                save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": args})
-                text = f"Send this WhatsApp message, sir?\n\nTo: {to}\n\n{msg}"
+                display, resolved, resolved_ok = await _resolve_wa_recipient(raw_to)
+                resolved_args = {**args, "to": resolved, "display_name": display}
+                save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
+                if resolved_ok:
+                    text = f"Send this WhatsApp message, sir?\n\nTo: {display}\n\n{msg}"
+                else:
+                    text = (f"Send this WhatsApp message, sir?\n\n"
+                            f"To: {display} (number not verified — double-check this is the right person)\n\n{msg}")
                 pstatus = "wa_preview"
             elif tool_name == "create_issue":
                 repo = args.get("repo", "")
@@ -627,6 +733,15 @@ async def chat(
                 window.add_message("assistant", text)
                 log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
                 return response
+
+        # Resolve __last__ for conversation fetch too
+        if tool_name == "whatsapp_conversation" and args.get("contact") == "__last__":
+            last = _last_wa_contact.get(session_id)
+            if last:
+                args = {**args, "contact": last[0]}
+            else:
+                text = "Who do you want to check messages with? I don't have a recent contact on record."
+                return _direct_response(mode=request.mode, text=text, provider_status="wa_no_context", suggested=[])
 
         if tool_name in TOOL_REGISTRY:
             result = await execute_tool(tool_name, args)
@@ -737,6 +852,13 @@ async def chat_stream(
 
         # ── Confirm-before-act flow (email + calendar + whatsapp + github issue, stream) ─
         if intent.payload.get("confirm_first"):
+            if tool_name == "whatsapp_send" and args.get("to") == "__last__":
+                last = _last_wa_contact.get(session_id)
+                if last:
+                    args = {**args, "to": last[1]}
+                else:
+                    text = "Who should I reply to? I don't have a recent WhatsApp contact on record."
+                    return await emit_single(text, "wa_no_context")
             if tool_name == "gmail_send":
                 to = args.get("to", "")
                 subj = args.get("subject", "")
@@ -764,10 +886,16 @@ async def chat_stream(
                 text = f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?"
                 pstatus = "calendar_preview"
             elif tool_name == "whatsapp_send":
-                to = args.get("to", "")
+                raw_to = args.get("to", "")
                 msg = args.get("text", "")
-                save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": args})
-                text = f"Send this WhatsApp message, sir?\n\nTo: {to}\n\n{msg}"
+                display, resolved, resolved_ok = await _resolve_wa_recipient(raw_to)
+                resolved_args = {**args, "to": resolved, "display_name": display}
+                save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
+                if resolved_ok:
+                    text = f"Send this WhatsApp message, sir?\n\nTo: {display}\n\n{msg}"
+                else:
+                    text = (f"Send this WhatsApp message, sir?\n\n"
+                            f"To: {display} (number not verified — double-check this is the right person)\n\n{msg}")
                 pstatus = "wa_preview"
             elif tool_name == "create_issue":
                 repo = args.get("repo", "")
@@ -793,6 +921,15 @@ async def chat_stream(
                 window.add_message("assistant", text)
                 log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
                 return await emit_single(text, pstatus)
+
+        # Resolve __last__ for conversation fetch
+        if tool_name == "whatsapp_conversation" and args.get("contact") == "__last__":
+            last = _last_wa_contact.get(session_id)
+            if last:
+                args = {**args, "contact": last[0]}
+            else:
+                text = "Who do you want to check messages with? I don't have a recent contact on record."
+                return await emit_single(text, "wa_no_context")
 
         if tool_name in TOOL_REGISTRY:
             result = await execute_tool(tool_name, args)
@@ -1728,8 +1865,13 @@ async def wa_status_route() -> dict:
 async def wa_start_route() -> dict:
     """Trigger WhatsApp service launch if not already running."""
     await asyncio.to_thread(_launch_whatsapp)
-    await asyncio.sleep(2)
+    # Poll up to 8s for the service to come up — return as soon as it responds
     from app.whatsapp_client import wa_status
+    for _ in range(8):
+        await asyncio.sleep(1)
+        status = await wa_status()
+        if status.get("ok") is not False:
+            return {"triggered": True, "status": status}
     status = await wa_status()
     return {"triggered": True, "status": status}
 
@@ -1807,6 +1949,12 @@ async def wa_qr_route() -> dict:
     return await wa_qr()
 
 
+@app.get("/whatsapp/contacts")
+async def wa_contacts_route(q: str = Query(default="")) -> dict:
+    from app.whatsapp_client import wa_contacts
+    return await wa_contacts(q)
+
+
 @app.get("/whatsapp/messages")
 async def wa_messages_route(limit: int = Query(20, ge=1, le=100)) -> dict:
     from app.whatsapp_client import wa_messages
@@ -1854,10 +2002,30 @@ async def search_contacts_route(q: str = Query(..., min_length=1)) -> dict[str, 
 async def add_contact_route(payload: dict) -> dict[str, object]:
     name = (payload or {}).get("name", "").strip()
     email = (payload or {}).get("email", "").strip()
+    phone = (payload or {}).get("phone", "").strip()
     if not name or not email:
         raise HTTPException(status_code=400, detail="name and email required")
     from app.contacts import upsert_contact
-    return {"status": "saved", "item": upsert_contact(name, email, source="manual")}
+    return {"status": "saved", "item": upsert_contact(name, email, source="manual", phone=phone)}
+
+
+@app.patch("/contacts/{contact_name}/phone")
+async def set_contact_phone_route(contact_name: str, payload: dict) -> dict[str, object]:
+    phone = (payload or {}).get("phone", "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone required")
+    from app.contacts import find_contacts, _normalize_phone
+    matches = find_contacts(contact_name, limit=1)
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"Contact '{contact_name}' not found")
+    norm = _normalize_phone(phone)
+    from app.db import get_db
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE contacts SET phone=? WHERE lower(name) LIKE ?",
+            (norm, f"%{contact_name.lower()}%"),
+        )
+    return {"status": "updated", "name": matches[0]["name"], "phone": norm}
 
 
 @app.post("/notion/sync")
