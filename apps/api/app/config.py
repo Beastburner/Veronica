@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # ── Ollama (offline fallback) ─────────────────────────────
     ollama_model: str = "qwen2.5:7b"
     ollama_base_url: str = "http://127.0.0.1:11434/v1"
+    ollama_embed_model: str = "nomic-embed-text"
 
     # ── Storage ──────────────────────────────────────────────
     database_url: str = "sqlite:///./veronica.db"

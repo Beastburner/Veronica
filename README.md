@@ -277,3 +277,48 @@ The confirmation-first pattern means VERONICA will **always show you the message
 | Email | Gmail API (OAuth2) |
 | Calendar | Google Calendar API (OAuth2) |
 | TTS | ElevenLabs (optional) |
+
+
+
+  High impact, relatively quick:                                                                                                                                 1. Wake word — "Hey Veronica" in the browser (Web Speech API) so you can talk hands-free without clicking anything
+  2. Auto-journal — end-of-day summary auto-generated from your life log (habits, tasks done, messages sent)                                                     3. News digest UI — category filtering + auto-refresh so the news tab actually feels alive                                                                   
+
+  Bigger features:
+  4. Semantic memory — embed your notes/memories so "what did I say about X last week" actually works with meaning, not just keywords
+  5. Notion bidirectional sync — pull pages from Notion into Veronica on a schedule, not just push
+
+  WhatsApp polish (since we're already there):
+  6. Read receipts / unread badge — show how many unread messages in the WA panel
+  7. Scheduled messages — "remind me to message Pranav tomorrow at 10am"
+ 
+
+ All routing correct. One thing left — you need nomic-embed-text pulled in Ollama. It's small (274MB) and purpose-built for embeddings. Run this once:        
+                                                                                                                                                                 ollama pull nomic-embed-text                                                                                                                                                                                                                                                                                                
+  If you skip that, it automatically falls back to your chat model for embeddings (still works, just less precise).                                            
+  
+  Summary of what was built:
+
+  ┌───────────────────┬─────────────────────────────────────────────────────────────────────────────────┐
+  │       What        │                                       How                                       │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Embed model       │ Dedicated nomic-embed-text via Ollama, fallback to chat model                   │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Notes embedded    │ create_note() now embeds on save                                                │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ DB migration      │ ALTER TABLE notes ADD COLUMN embedding runs on startup                          │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Backfill          │ Scheduler embeds existing records without embeddings (on startup + every 10min) │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Unified search    │ semantic_search() searches across memories AND notes by cosine similarity       │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Threshold         │ Lowered from 0.4 → 0.2, plus keyword fallback if no hits                        │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Context injection │ build_assistant_context() uses semantic search for both memories and notes      │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ Intent routing    │ "what do I know about X?" → instant semantic answer                             │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+  │ API routes        │ GET /search?q=, /memory/search?q=, /notes/search?q=                             │
+  └───────────────────┴─────────────────────────────────────────────────────────────────────────────────┘
+
+
+    ollama pull nomic-embed-text

@@ -40,6 +40,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             content TEXT NOT NULL,
+            embedding TEXT,
             created_at TEXT NOT NULL
         );
 
@@ -200,6 +201,13 @@ def init_db() -> None:
     # Migrate: add phone column to contacts if it doesn't exist yet
     try:
         conn.execute("ALTER TABLE contacts ADD COLUMN phone TEXT")
+        conn.commit()
+    except Exception:
+        pass  # already exists
+
+    # Migrate: add embedding column to notes if it doesn't exist yet
+    try:
+        conn.execute("ALTER TABLE notes ADD COLUMN embedding TEXT")
         conn.commit()
     except Exception:
         pass  # already exists

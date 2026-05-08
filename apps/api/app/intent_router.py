@@ -53,6 +53,15 @@ _ALIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SEMANTIC_SEARCH_RE = re.compile(
+    r"(?:what\s+do\s+i\s+(?:know|have|remember)\s+about|"
+    r"what\s+did\s+i\s+(?:say|write|note|think)\s+about|"
+    r"find\s+(?:memories?|notes?|anything)\s+(?:about|on|related\s+to)|"
+    r"search\s+(?:my\s+)?(?:memory|memories|notes?)\s+(?:for|about)|"
+    r"do\s+i\s+have\s+(?:anything|notes?|memories?)\s+(?:about|on))\s+(.+)",
+    re.IGNORECASE,
+)
+
 _SOCIAL_REPLIES = ("Hey.", "Sup.", "Hey, what's good.", "Yo.", "Hey there.")
 _social_reply_index = 0
 
@@ -129,6 +138,32 @@ def _read_intent(message: str) -> IntentResult | None:
         else:
             text = "Sir, no stored notes yet."
         return IntentResult("read", {"kind": "notes", "message": text})
+
+    m = _SEMANTIC_SEARCH_RE.search(lowered)
+    if m:
+        topic = m.group(1).strip().rstrip("?.!")
+        from app.storage import semantic_search
+        results = semantic_search(topic, limit=6)
+        if results:
+            lines = [f"- [{r['source']}] {r['content']}" for r in results]
+            text = f"Here's what I found about \"{topic}\":\n\n" + "\n".join(lines)
+        else:
+            text = f"I don't have anything stored about \"{topic}\", sir."
+        return IntentResult("read", {"kind": "semantic_search", "message": text})
+
+    _JOURNAL_PHRASES = (
+        "how was my day", "write my journal", "write a journal", "daily journal",
+        "journal entry", "generate journal", "what did i do today", "today's summary",
+        "summarize my day", "day summary",
+    )
+    if any(phrase in lowered for phrase in _JOURNAL_PHRASES):
+        from app.journal import get_journal, generate_journal_entry
+        entry = get_journal()
+        if not entry:
+            entry = generate_journal_entry()
+        summary = entry.get("summary", "No activity recorded today.")
+        date = entry.get("date", "today")
+        return IntentResult("read", {"kind": "journal", "message": f"Journal — {date}:\n\n{summary}"})
 
     return None
 
@@ -869,7 +904,8 @@ def _tool_intent(message: str) -> IntentResult | None:
     if m:
         raw = (m.group("n1") or m.group("n2") or m.group("n3") or m.group("n4") or m.group("n5") or "").strip()
         contact = "__last__" if (not raw or raw.lower() in _PRONOUNS) else raw
-        return IntentResult("tool", {"tool": "whatsapp_conversation", "args": {"contact": contact}})
+        # reply_context=True → show conversation AND ask what to say back
+        return IntentResult("tool", {"tool": "whatsapp_conversation", "args": {"contact": contact, "reply_context": True}})
 
     # "reply saying X" / "reply to Pranav saying X" — requires explicit text
     m = _WA_REPLY_RE.search(stripped)
@@ -1008,10 +1044,22 @@ def _tool_intent(message: str) -> IntentResult | None:
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
+_ACTIVATION_PREFIX_RE = re.compile(
+    r"^\s*(?:COMMANDER|FRIDAY|VERONICA|SENTINEL|JARVIS)\b[,\s]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_activation_prefix(message: str) -> str:
+    """Remove leading mode/activation words so intent matching works regardless of how the user addresses Veronica."""
+    return _ACTIVATION_PREFIX_RE.sub("", message).strip()
+
+
 def classify(message: str) -> IntentResult:
+    stripped = _strip_activation_prefix(message)
     for handler in (_social_intent, _write_intent_regex, _read_intent, _tool_intent, _llm_action_intent, _protocol_intent, _llm_write_intent):
         try:
-            result = handler(message)
+            result = handler(stripped)
         except Exception:
             log.exception("Intent handler %s failed", handler.__name__)
             result = None

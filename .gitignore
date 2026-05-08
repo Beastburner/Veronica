@@ -38,6 +38,17 @@ out/
 .DS_Store
 Thumbs.db
 
+# Scratch / temp files at repo root
+scratch/
+image.png
+image copy.png
+*.png
+
+# Generated docs (auto-created, not source)
+IMPROVEMENTS.md
+MEMORY_OPTIMIZATION.md
+ARCHITECTURE.md
+
 # WhatsApp
 apps/whatsapp/.ww-session/
 apps/whatsapp/.wwebjs_cache/

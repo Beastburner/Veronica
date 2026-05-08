@@ -6,6 +6,7 @@ import { ActivityPanel } from "@/components/ActivityPanel";
 import { CalendarPanel } from "@/components/CalendarPanel";
 import { EmailPanel } from "@/components/EmailPanel";
 import { GitHubPanel } from "@/components/GitHubPanel";
+import JournalPanel from "@/components/JournalPanel";
 import { SpotifyPanel } from "@/components/SpotifyPanel";
 import { WhatsAppPanel } from "@/components/WhatsAppPanel";
 
@@ -25,7 +26,7 @@ async function api<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
-type Tab = "operations" | "habits" | "news" | "email" | "calendar" | "activity" | "github" | "spotify" | "whatsapp";
+type Tab = "operations" | "habits" | "news" | "email" | "calendar" | "activity" | "github" | "spotify" | "whatsapp" | "journal";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "operations", label: "Ops" },
@@ -37,6 +38,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "github",     label: "GitHub" },
   { id: "spotify",    label: "Spotify" },
   { id: "whatsapp",   label: "WhatsApp" },
+  { id: "journal",    label: "Journal" },
 ];
 
 export function OperationsPanels() {
@@ -199,6 +201,7 @@ export function OperationsPanels() {
       {activeTab === "github"   && <GitHubPanel />}
       {activeTab === "spotify"  && <SpotifyPanel />}
       {activeTab === "whatsapp" && <WhatsAppPanel />}
+      {activeTab === "journal"  && <JournalPanel />}
 
       {/* ── HABITS TAB ──────────────────────────────────────── */}
       {activeTab === "habits" && (

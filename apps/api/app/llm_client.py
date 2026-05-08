@@ -186,11 +186,14 @@ def backend_status() -> dict[str, Any]:
 
 
 def get_embedding(text: str) -> list[float] | None:
-    # Groq doesn't support embeddings — always use Ollama for this
-    client, model = _ollama()
-    try:
-        resp = client.embeddings.create(input=[text], model=model)
-        return resp.data[0].embedding
-    except Exception as e:
-        log.warning("Embedding failed: %s", e)
-        return None
+    """Embed text using the dedicated embed model, falling back to the chat model."""
+    client, _ = _ollama()
+    # Try the dedicated embed model first (nomic-embed-text or configured override)
+    for model in (settings.ollama_embed_model, settings.ollama_model):
+        try:
+            resp = client.embeddings.create(input=[text], model=model)
+            return resp.data[0].embedding
+        except Exception as e:
+            log.debug("Embedding with model %s failed: %s — trying next", model, e)
+    log.warning("All embedding attempts failed for text: %s…", text[:60])
+    return None

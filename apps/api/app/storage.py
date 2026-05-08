@@ -61,9 +61,11 @@ def create_note(content: str) -> dict[str, Any]:
         if existing:
             return {"id": existing["id"], "content": existing["content"], "duplicate": True}
 
+        emb = get_embedding(content)
+        emb_str = json.dumps(emb) if emb else None
         cursor.execute(
-            "INSERT INTO notes (content, created_at) VALUES (?, ?)",
-            (content, utcnow()),
+            "INSERT INTO notes (content, embedding, created_at) VALUES (?, ?, ?)",
+            (content, emb_str, utcnow()),
         )
         return {"id": cursor.lastrowid, "content": content}
 
@@ -379,12 +381,17 @@ def get_recent_summary(session_id: str) -> str | None:
 
 
 def create_memory(content: str, tags: str = "") -> dict[str, Any]:
-    # Run embedding synchronously for simple local setups
-    emb = get_embedding(content)
-    embedding_str = json.dumps(emb) if emb else None
-
     with get_db() as conn:
         cursor = conn.cursor()
+        existing = cursor.execute(
+            "SELECT id, content, created_at FROM memories WHERE lower(trim(content)) = lower(trim(?)) LIMIT 1",
+            (content,),
+        ).fetchone()
+        if existing:
+            return {**dict(existing), "duplicate": True}
+
+        emb = get_embedding(content)
+        embedding_str = json.dumps(emb) if emb else None
         cursor.execute(
             "INSERT INTO memories (content, tags, embedding, created_at) VALUES (?, ?, ?, ?)",
             (content, tags, embedding_str, utcnow()),
@@ -461,10 +468,91 @@ def get_relevant_memories(query: str, limit: int = 10) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Sort by descending similarity
     scored.sort(key=lambda x: x[0], reverse=True)
-    # Return those with some minimal semantic relevance
-    return [m for score, m in scored if score > 0.4][:limit]
+    return [m for score, m in scored if score > 0.3][:limit]
+
+
+def get_relevant_notes(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    query_emb = get_embedding(query)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, content, embedding, created_at FROM notes"
+        ).fetchall()
+        all_notes = [dict(r) for r in rows]
+
+    if not query_emb:
+        return sorted(all_notes, key=lambda x: x["created_at"], reverse=True)[:limit]
+
+    scored = []
+    for n in all_notes:
+        emb_str = n.get("embedding")
+        if not emb_str:
+            continue
+        try:
+            emb = json.loads(emb_str)
+            score = _cosine_similarity(query_emb, emb)
+            scored.append((score, n))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [n for score, n in scored if score > 0.3][:limit]
+
+
+def semantic_search(query: str, limit: int = 8) -> list[dict[str, Any]]:
+    """
+    Hybrid search: semantic similarity for embedded items + keyword match for
+    unembedded items. Results are merged and deduplicated.
+    """
+    query_emb = get_embedding(query)
+    kw = query.lower()
+
+    scored: list[tuple[float, dict]] = []   # (similarity_score, item)
+    kw_only: list[dict] = []                # items with no embedding but keyword match
+
+    with get_db() as conn:
+        rows_mem = conn.execute(
+            "SELECT id, content, tags, embedding, created_at FROM memories"
+        ).fetchall()
+        rows_note = conn.execute(
+            "SELECT id, content, embedding, created_at FROM notes"
+        ).fetchall()
+
+    for row, source in [(r, "memory") for r in rows_mem] + [(r, "note") for r in rows_note]:
+        item = dict(row)
+        emb_str = item.pop("embedding", None)
+        item["source"] = source
+        has_kw = kw in (item.get("content") or "").lower()
+
+        if emb_str and query_emb:
+            try:
+                emb = json.loads(emb_str)
+                score = _cosine_similarity(query_emb, emb)
+                scored.append((score, item))
+                continue
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # No usable embedding — fall back to keyword
+        if has_kw:
+            kw_only.append(item)
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Threshold 0.3 — more conservative; nomic-embed-text scores < 0.3 are usually unrelated
+    top: list[dict] = [item for score, item in scored if score > 0.3][:limit]
+
+    # Supplement with keyword-only hits that aren't already in top
+    seen = {(r["source"], r["id"]) for r in top}
+    for item in kw_only:
+        if (item["source"], item["id"]) not in seen:
+            top.append(item)
+            seen.add((item["source"], item["id"]))
+
+    # If still nothing, show the top-2 semantic results regardless of threshold
+    if not top and scored:
+        top = [item for _, item in scored[:2]]
+
+    return top[:limit]
 
 
 def build_daily_briefing() -> dict[str, Any]:
@@ -492,56 +580,40 @@ def build_assistant_context(query: str) -> list[dict[str, str]]:
     lowered = query.lower()
     context: list[dict[str, str]] = []
 
-    # Use semantic search for relevant memories
-    memories = get_relevant_memories(query, limit=10)
-    if not memories:
-        # Fallback to recent memories just to have some context if none are strongly relevant
-        memories = get_recent_memories(limit=3)
+    # Semantic search across memories and notes
+    relevant = semantic_search(query, limit=8)
+    mem_hits = [r for r in relevant if r.get("source") == "memory"]
+    note_hits = [r for r in relevant if r.get("source") == "note"]
 
-    if memories:
-        joined = "\n".join(f"- {m['content']}" for m in memories)
-        context.append(
-            {
-                "role": "system",
-                "content": f"Long-term memories from VERONICA storage:\n{joined}",
-            }
-        )
+    # Fallback: if no semantic hits, surface recent items
+    if not mem_hits:
+        mem_hits = get_recent_memories(limit=3)
+    if not note_hits and any(w in lowered for w in ("note", "notes", "remember", "memorized", "know about", "think about")):
+        recent, _ = list_notes(limit=3)
+        note_hits = recent
 
-    if any(word in lowered for word in ["reminder", "reminders", "remember me"]):
+    if mem_hits:
+        joined = "\n".join(f"- {m['content']}" for m in mem_hits)
+        context.append({"role": "system", "content": f"Long-term memories:\n{joined}"})
+
+    if note_hits:
+        joined = "\n".join(f"- {n['content']}" for n in note_hits)
+        context.append({"role": "system", "content": f"Relevant notes:\n{joined}"})
+
+    if any(word in lowered for word in ["reminder", "reminders", "remind me"]):
         reminders, _ = list_reminders(limit=5, status="pending")
         if reminders:
             joined = "\n".join(
                 f"- {item['content']}" + (f" ({item['due_label']})" if item.get("due_label") else "")
                 for item in reminders
             )
-            context.append(
-                {
-                    "role": "system",
-                    "content": f"Pending reminders from VERONICA storage:\n{joined}",
-                }
-            )
+            context.append({"role": "system", "content": f"Pending reminders:\n{joined}"})
 
     if any(word in lowered for word in ["task", "tasks", "focus", "todo", "to-do"]):
         tasks, _ = list_tasks(limit=5, status="pending")
         if tasks:
             joined = "\n".join(f"- {item['description']} ({item['priority']})" for item in tasks)
-            context.append(
-                {
-                    "role": "system",
-                    "content": f"Pending tasks from VERONICA storage:\n{joined}",
-                }
-            )
-
-    if any(word in lowered for word in ["note", "notes", "memorized"]):
-        notes, _ = list_notes(limit=5)
-        if notes:
-            joined = "\n".join(f"- {item['content']}" for item in notes)
-            context.append(
-                {
-                    "role": "system",
-                    "content": f"Recent notes from VERONICA storage:\n{joined}",
-                }
-            )
+            context.append({"role": "system", "content": f"Pending tasks:\n{joined}"})
 
     return context
 
@@ -644,6 +716,12 @@ def perform_create_note(content: str) -> dict[str, str]:
 
 def perform_create_memory(content: str) -> dict[str, str]:
     item = create_memory(content)
+    if item.get("duplicate"):
+        return {
+            "kind": "memory",
+            "status": "duplicate",
+            "message": f"Sir, that's already in memory: {item['content']}.",
+        }
     return {
         "kind": "memory",
         "status": "created",

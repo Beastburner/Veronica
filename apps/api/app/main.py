@@ -83,6 +83,46 @@ logging.basicConfig(
 log = logging.getLogger("veronica")
 
 
+async def _compose_wa_reply(messages: list[dict], contact_name: str) -> str:
+    """Auto-compose a contextual WhatsApp reply based on recent conversation."""
+    sender = (settings.sender_name or "Parth").split()[0]
+
+    # messages come newest-first from Node.js
+    last_msg = next(
+        ((m.get("body") or "").strip() for m in messages if not m.get("fromMe")),
+        "",
+    )
+    if not last_msg:
+        return ""
+
+    context_lines = []
+    for m in reversed(messages[:8]):
+        who = "You" if m.get("fromMe") else contact_name
+        body = (m.get("body") or "").strip()
+        if body:
+            context_lines.append(f"{who}: {body}")
+    conversation = "\n".join(context_lines)
+
+    from app.llm_client import call_chat
+    system = (
+        f"You are {sender}, writing a WhatsApp reply to {contact_name}. "
+        "Output ONLY the reply message — no labels, no quotes, no explanation. "
+        "Casual and natural, 1-3 sentences, first person. Match the tone of the conversation. "
+        "NEVER mention Veronica, AI, or any automated system."
+    )
+    user_prompt = (
+        f"Conversation:\n{conversation}\n\n"
+        f"Reply to their last message: \"{last_msg}\""
+    )
+    text, status = await asyncio.to_thread(
+        call_chat,
+        [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}],
+        temperature=0.8,
+        max_tokens=120,
+    )
+    return (text or "").strip()
+
+
 async def _resolve_wa_recipient(to: str) -> tuple[str, str, bool]:
     """
     Resolve a WhatsApp recipient to (display_label, value_to_send, number_verified).
@@ -743,6 +783,11 @@ async def chat(
                 text = "Who do you want to check messages with? I don't have a recent contact on record."
                 return _direct_response(mode=request.mode, text=text, provider_status="wa_no_context", suggested=[])
 
+        # Strip reply_context flag before executing (not a real tool parameter)
+        _reply_ctx = False
+        if tool_name == "whatsapp_conversation":
+            _reply_ctx = args.pop("reply_context", False)
+
         if tool_name in TOOL_REGISTRY:
             result = await execute_tool(tool_name, args)
             tool_results.append(result)
@@ -751,6 +796,24 @@ async def chat(
             # Short-circuit: tools with canned replies bypass the LLM entirely
             direct_text = _tool_direct_reply(tool_name, result)
             if direct_text:
+                if _reply_ctx:
+                    contact = args.get("contact", "")
+                    if contact and contact != "__last__":
+                        _last_wa_contact[session_id] = (contact, contact)
+                    msgs = result.get("messages") or []
+                    composed = await _compose_wa_reply(msgs, contact)
+                    if composed:
+                        display, resolved, resolved_ok = await _resolve_wa_recipient(contact)
+                        resolved_args = {"to": resolved, "text": composed, "display_name": display}
+                        save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
+                        if resolved_ok:
+                            reply_preview = f"{direct_text}\n\nReply to {display}:\n\n{composed}\n\nSend this?"
+                        else:
+                            reply_preview = f"{direct_text}\n\nReply to {display} (number not verified):\n\n{composed}\n\nSend this?"
+                        window.add_message("assistant", reply_preview)
+                        log_action("VERONICA", f"chat:{request.mode.value}:wa_reply_preview", "low", True, reply_preview[:240])
+                        return _direct_response(mode=request.mode, text=reply_preview, provider_status="wa_preview", suggested=["Yes, send it", "Cancel"])
+                    direct_text += "\n\nWhat would you like to say back?"
                 window.add_message("assistant", direct_text)
                 log_action("VERONICA", f"chat:{request.mode.value}:tool_direct:{tool_name}", "low", True, direct_text[:240])
                 return _direct_response(mode=request.mode, text=direct_text, provider_status="tool_direct", suggested=[])
@@ -931,6 +994,11 @@ async def chat_stream(
                 text = "Who do you want to check messages with? I don't have a recent contact on record."
                 return await emit_single(text, "wa_no_context")
 
+        # Strip reply_context flag before executing
+        _reply_ctx = False
+        if tool_name == "whatsapp_conversation":
+            _reply_ctx = args.pop("reply_context", False)
+
         if tool_name in TOOL_REGISTRY:
             result = await execute_tool(tool_name, args)
             tool_results.append(result)
@@ -939,6 +1007,24 @@ async def chat_stream(
             # Short-circuit: tools with canned replies bypass the LLM entirely
             direct_text = _tool_direct_reply(tool_name, result)
             if direct_text:
+                if _reply_ctx:
+                    contact = args.get("contact", "")
+                    if contact and contact != "__last__":
+                        _last_wa_contact[session_id] = (contact, contact)
+                    msgs = result.get("messages") or []
+                    composed = await _compose_wa_reply(msgs, contact)
+                    if composed:
+                        display, resolved, resolved_ok = await _resolve_wa_recipient(contact)
+                        resolved_args = {"to": resolved, "text": composed, "display_name": display}
+                        save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
+                        if resolved_ok:
+                            reply_preview = f"{direct_text}\n\nReply to {display}:\n\n{composed}\n\nSend this?"
+                        else:
+                            reply_preview = f"{direct_text}\n\nReply to {display} (number not verified):\n\n{composed}\n\nSend this?"
+                        window.add_message("assistant", reply_preview)
+                        log_action("VERONICA", f"chat:{request.mode.value}:wa_reply_preview", "low", True, reply_preview[:240])
+                        return await emit_single(reply_preview, "wa_preview")
+                    direct_text += "\n\nWhat would you like to say back?"
                 window.add_message("assistant", direct_text)
                 log_action("VERONICA", f"chat:{request.mode.value}:tool_direct:{tool_name}", "low", True, direct_text[:240])
                 return await emit_single(direct_text, "tool_direct")
@@ -2035,6 +2121,64 @@ async def notion_sync_route(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="database_id required")
     from app.notion import sync_notes_to_notion
     return await sync_notes_to_notion(database_id)
+
+
+# ── Semantic search ───────────────────────────────────────────────────────────
+
+
+@app.get("/search")
+async def unified_search(q: str = Query(..., min_length=1), limit: int = Query(8, ge=1, le=20)) -> dict:
+    from app.storage import semantic_search
+    results = await asyncio.to_thread(semantic_search, q, limit)
+    return {"query": q, "results": results, "total": len(results)}
+
+
+@app.get("/memory/search")
+async def memory_search(q: str = Query(..., min_length=1), limit: int = Query(8, ge=1, le=20)) -> dict:
+    from app.storage import get_relevant_memories
+    results = await asyncio.to_thread(get_relevant_memories, q, limit)
+    return {"query": q, "results": results, "total": len(results)}
+
+
+@app.get("/notes/search")
+async def notes_search(q: str = Query(..., min_length=1), limit: int = Query(8, ge=1, le=20)) -> dict:
+    from app.storage import get_relevant_notes
+    results = await asyncio.to_thread(get_relevant_notes, q, limit)
+    return {"query": q, "results": results, "total": len(results)}
+
+
+# ── Journal ───────────────────────────────────────────────────────────────────
+
+
+@app.get("/journal")
+async def list_journals_route(limit: int = Query(14, ge=1, le=60)) -> dict:
+    from app.journal import list_journals
+    return {"items": list_journals(limit=limit)}
+
+
+@app.get("/journal/today")
+async def journal_today_route() -> dict:
+    from app.journal import get_journal, generate_journal_entry
+    existing = get_journal()
+    if existing:
+        return existing
+    return await asyncio.to_thread(generate_journal_entry)
+
+
+@app.post("/journal/generate")
+async def journal_generate_route(payload: dict = {}) -> dict:
+    from app.journal import generate_journal_entry
+    date_str = (payload or {}).get("date") or None
+    return await asyncio.to_thread(generate_journal_entry, date_str)
+
+
+@app.get("/journal/{date_str}")
+async def journal_by_date_route(date_str: str) -> dict:
+    from app.journal import get_journal
+    entry = get_journal(date_str)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"No journal entry for {date_str}")
+    return entry
 
 
 # ── Wake word event bus ───────────────────────────────────────────────────────
