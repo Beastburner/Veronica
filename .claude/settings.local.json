@@ -70,7 +70,20 @@
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(m['name']\\) for m in d.get\\('models',[]\\)]\")",
       "Bash(python *)",
       "Bash(powershell *)",
-      "Bash(Remove-Item *)"
+      "Bash(Remove-Item *)",
+      "Bash(Test-Path *)",
+      "Bash(python3 *)",
+      "Bash(.venvScriptspython.exe -c ' *)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import openai; print\\(openai.__version__\\)\")",
+      "PowerShell(python --version; python -c \"from openai import APIConnectionError, APIStatusError, OpenAI, RateLimitError; print\\('system python: imports OK'\\)\" 2>&1)",
+      "PowerShell(ollama list *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(netstat *)",
+      "PowerShell(taskkill *)",
+      "Bash(dir node_modules)",
+      "Bash(where node *)",
+      "PowerShell(Test-Path *)"
     ]
   }
 }

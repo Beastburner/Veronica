@@ -203,26 +203,70 @@ export function VoiceInterface({ onCommand, speak, busy, onRecordingChange }: Vo
     };
   }, [cleanupStream]);
 
+  // ── Speech cleanup (mirrors wake_listener.py _clean_for_speech) ──────────
+
+  const cleanForSpeech = useCallback((text: string): string => {
+    const urlRe = /https?:\/\/\S+/g;
+    const isoRe = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+\-]\d{2}:\d{2}/g;
+    const skipPrefixes = ["meet:", "calendar:", "http", "note:", "attendees:"];
+
+    const humanDt = (iso: string): string => {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString("en-IN", {
+          hour: "numeric", minute: "2-digit", hour12: true,
+          month: "long", day: "numeric",
+        });
+      } catch { return iso; }
+    };
+
+    // Calendar confirmation → compact spoken summary
+    if (/Title:\s*.+/.test(text) && text.includes("Schedule this?")) {
+      const titleM = text.match(/Title:\s*(.+)/);
+      const timeM  = text.match(/Time:\s*(.+)/);
+      const titleStr = titleM ? titleM[1].trim() : "the meeting";
+      const timeStr  = timeM  ? timeM[1].trim().replace(isoRe, humanDt) : "";
+      return `${titleStr}${timeStr ? `, ${timeStr}` : ""} — schedule this?`;
+    }
+
+    urlRe.lastIndex = 0;
+    const hadDetails = urlRe.test(text);
+    urlRe.lastIndex = 0;
+
+    const clean = text
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => {
+        if (!l) return false;
+        const low = l.toLowerCase();
+        if (skipPrefixes.some(p => low.startsWith(p))) return false;
+        if (urlRe.test(l)) { urlRe.lastIndex = 0; return false; }
+        return true;
+      })
+      .map(l => l.replace(isoRe, humanDt))
+      .join(" ")
+      .trim();
+
+    return hadDetails ? clean.replace(/\.?$/, ". Details are on your dashboard, sir.") : clean;
+  }, []);
+
   // ── TTS ──────────────────────────────────────────────────────────────────
 
   const playBrowserTTS = useCallback((text: string) => {
     const synthesis = typeof window !== "undefined" ? window.speechSynthesis : undefined;
-    if (!synthesis) {
-      setSpeaking(false);
-      return;
-    }
+    if (!synthesis) { setSpeaking(false); return; }
     synthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
+    utterance.rate = 1.05;
     utterance.pitch = 1;
     utterance.onend = () => setSpeaking(false);
     utterance.onerror = () => setSpeaking(false);
     synthesis.speak(utterance);
   }, []);
 
-  const playElevenLabs = useCallback(async (text: string): Promise<boolean> => {
+  const playEdgeTTS = useCallback(async (text: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_URL}/tts`, {
+      const response = await fetch(`${API_URL}/tts/edge`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -232,14 +276,8 @@ export function VoiceInterface({ onCommand, speak, busy, onRecordingChange }: Vo
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = () => {
-        setSpeaking(false);
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        setSpeaking(false);
-        URL.revokeObjectURL(url);
-      };
+      audio.onended = () => { setSpeaking(false); URL.revokeObjectURL(url); };
+      audio.onerror = () => { setSpeaking(false); URL.revokeObjectURL(url); };
       await audio.play();
       return true;
     } catch {
@@ -253,11 +291,12 @@ export function VoiceInterface({ onCommand, speak, busy, onRecordingChange }: Vo
     lastSpokenRef.current = trimmed;
     setSpeaking(true);
 
+    const spoken = cleanForSpeech(trimmed);
     void (async () => {
-      const ok = await playElevenLabs(trimmed);
-      if (!ok) playBrowserTTS(trimmed);
+      const ok = await playEdgeTTS(spoken);
+      if (!ok) playBrowserTTS(spoken);
     })();
-  }, [speak, muted, playElevenLabs, playBrowserTTS]);
+  }, [speak, muted, playEdgeTTS, playBrowserTTS, cleanForSpeech]);
 
   const stopSpeaking = useCallback(() => {
     if (audioRef.current) {

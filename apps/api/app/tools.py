@@ -17,7 +17,7 @@ from app.storage import current_local_time
 
 log = logging.getLogger("veronica.tools")
 
-USER_AGENT = "VERONICA/0.3 (+https://localhost)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 HTTP_TIMEOUT = 6.0
 
 
@@ -183,11 +183,14 @@ async def web_search(query: str) -> dict[str, Any]:
         log.warning("search failed: %s", exc)
         return {"tool": "web_search", "ok": False, "error": "search provider unreachable"}
 
+    if not results:
+        return {"tool": "web_search", "ok": False, "query": q, "error": f"No results found for: {q}"}
+
     return {
         "tool": "web_search",
         "ok": True,
         "query": q,
-        "result": results[:3] or [{"title": q, "snippet": "No results found.", "url": ""}],
+        "result": results[:3],
     }
 
 
@@ -356,6 +359,269 @@ async def calendar_free_slots(duration_minutes: int = 60, days_ahead: int = 7) -
     return await find_free_slot(duration_minutes=duration_minutes, days_ahead=days_ahead)
 
 
+# ── Habits ─────────────────────────────────────────────────────────────────
+
+
+async def habit_status() -> dict[str, Any]:
+    from app.habits import get_today_status
+    habits = get_today_status()
+    done = sum(1 for h in habits if h.get("done_today"))
+    return {"tool": "habit_status", "ok": True, "result": {"habits": habits, "done": done, "total": len(habits)}}
+
+
+async def habit_log(name: str, note: str = "") -> dict[str, Any]:
+    from app.habits import log_habit
+    result = log_habit(name, note)
+    if not result.get("ok", True) and "error" in result:
+        return {"tool": "habit_log", "ok": False, "error": result["error"]}
+    return {"tool": "habit_log", "ok": True, "result": result}
+
+
+async def habit_create(name: str, description: str = "", frequency: str = "daily") -> dict[str, Any]:
+    from app.habits import create_habit
+    habit = create_habit(name, description, frequency)
+    return {"tool": "habit_create", "ok": True, "result": habit}
+
+
+# ── News digest ─────────────────────────────────────────────────────────────
+
+
+async def news_digest(limit_per_feed: int = 3) -> dict[str, Any]:
+    from app.news import get_digest
+    digest = get_digest(limit_per_feed=limit_per_feed)
+    return {"tool": "news_digest", "ok": True, "result": digest}
+
+
+# ── Clipboard ───────────────────────────────────────────────────────────────
+
+
+async def clipboard_save(content: str, tags: str = "") -> dict[str, Any]:
+    from app.clipboard import save_clip
+    clip = save_clip(content, tags)
+    return {"tool": "clipboard_save", "ok": True, "result": clip}
+
+
+async def clipboard_search(query: str) -> dict[str, Any]:
+    from app.clipboard import search_clips
+    clips = search_clips(query)
+    return {"tool": "clipboard_search", "ok": True, "result": clips}
+
+
+# ── Goal planner ────────────────────────────────────────────────────────────
+
+
+async def plan_goal(goal: str, auto_create: bool = False) -> dict[str, Any]:
+    from app.planner import decompose_goal
+    result = decompose_goal(goal, auto_create=auto_create)
+    ok = "error" not in result
+    return {"tool": "plan_goal", "ok": ok, "result": result}
+
+
+# ── Pomodoro timer ──────────────────────────────────────────────────────────
+
+
+async def pomodoro_start(label: str = "Focus session", duration_minutes: int = 25) -> dict[str, Any]:
+    from app.pomodoro import start_timer
+    result = start_timer(label, duration_minutes)
+    return {"tool": "pomodoro_start", "ok": True, "result": result}
+
+
+async def pomodoro_stop(completed: bool = True) -> dict[str, Any]:
+    from app.pomodoro import stop_timer
+    result = stop_timer(completed)
+    return {"tool": "pomodoro_stop", "ok": result.get("ok", False), "result": result}
+
+
+async def pomodoro_status() -> dict[str, Any]:
+    from app.pomodoro import get_status
+    return {"tool": "pomodoro_status", "ok": True, "result": get_status()}
+
+
+# ── System stats (psutil) ──────────────────────────────────────────────────
+
+
+async def system_stats() -> dict[str, Any]:
+    import psutil
+    cpu = psutil.cpu_percent(interval=0.2)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    return {
+        "tool": "system_stats",
+        "ok": True,
+        "result": {
+            "cpu_percent": cpu,
+            "ram_used_gb": round(mem.used / 1e9, 2),
+            "ram_total_gb": round(mem.total / 1e9, 2),
+            "ram_percent": mem.percent,
+            "disk_used_gb": round(disk.used / 1e9, 2),
+            "disk_total_gb": round(disk.total / 1e9, 2),
+            "disk_percent": disk.percent,
+        },
+    }
+
+
+# ── Web scraping ───────────────────────────────────────────────────────────
+
+
+async def web_scrape(url: str) -> dict[str, Any]:
+    """Fetch a URL and extract its readable text content."""
+    if not url.startswith(("http://", "https://")):
+        return {"tool": "web_scrape", "ok": False, "error": "URL must start with http:// or https://"}
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        return {"tool": "web_scrape", "ok": False, "error": str(exc), "url": url}
+
+    content = response.text
+    # Strip scripts, styles, and comments
+    content = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+    # Strip all remaining tags
+    text = _strip_tags(content)
+    # Collapse whitespace
+    text = re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+", " ", text)).strip()
+
+    return {
+        "tool": "web_scrape",
+        "ok": True,
+        "url": url,
+        "result": text[:5000],
+        "total_chars": len(text),
+    }
+
+
+# ── GitHub expanded ───────────────────────────────────────────────────────
+
+
+async def github_list_prs(repo: str, state: str = "open") -> dict[str, Any]:
+    from app.github import list_pull_requests
+    return await list_pull_requests(repo, state)
+
+
+async def github_pr_review(repo: str, pr_number: int) -> dict[str, Any]:
+    from app.github import get_pr_review
+    return await get_pr_review(repo, pr_number)
+
+
+async def github_recent_commits(repo: str, limit: int = 5) -> dict[str, Any]:
+    from app.github import list_recent_commits
+    return await list_recent_commits(repo, limit)
+
+
+async def github_repo_stats(repo: str) -> dict[str, Any]:
+    from app.github import get_repo_stats
+    return await get_repo_stats(repo)
+
+
+async def github_commit_file(
+    repo: str, path: str, content: str, message: str, branch: str = "main"
+) -> dict[str, Any]:
+    from app.github import commit_file
+    return await commit_file(repo, path, content, message, branch)
+
+
+# ── Spotify ────────────────────────────────────────────────────────────────
+
+
+async def spotify_current() -> dict[str, Any]:
+    from app.spotify import get_current_track
+    return await get_current_track()
+
+
+async def spotify_toggle() -> dict[str, Any]:
+    from app.spotify import spotify_play_pause
+    return await spotify_play_pause()
+
+
+async def spotify_skip_next() -> dict[str, Any]:
+    from app.spotify import spotify_next
+    return await spotify_next()
+
+
+async def spotify_skip_prev() -> dict[str, Any]:
+    from app.spotify import spotify_prev
+    return await spotify_prev()
+
+
+async def spotify_volume(volume_pct: int) -> dict[str, Any]:
+    from app.spotify import spotify_set_volume
+    return await spotify_set_volume(volume_pct)
+
+
+async def spotify_play(query: str) -> dict[str, Any]:
+    from app.spotify import spotify_search_play
+    return await spotify_search_play(query)
+
+
+async def spotify_play_for_mode(mode: str) -> dict[str, Any]:
+    from app.spotify import spotify_mode_play
+    return await spotify_mode_play(mode)
+
+
+# ── Notion ─────────────────────────────────────────────────────────────────
+
+
+async def notion_search(query: str) -> dict[str, Any]:
+    from app.notion import search_notion
+    return await search_notion(query)
+
+
+async def notion_page(page_id: str) -> dict[str, Any]:
+    from app.notion import get_notion_page
+    return await get_notion_page(page_id)
+
+
+async def notion_sync_push(database_id: str) -> dict[str, Any]:
+    from app.notion import sync_notes_to_notion
+    return await sync_notes_to_notion(database_id)
+
+
+# ── WhatsApp ───────────────────────────────────────────────────────────────
+
+
+async def whatsapp_status() -> dict[str, Any]:
+    from app.whatsapp_client import wa_status
+    return await wa_status()
+
+
+async def whatsapp_messages(limit: int = 20) -> dict[str, Any]:
+    from app.whatsapp_client import wa_messages
+    return await wa_messages(limit)
+
+
+async def whatsapp_send(to: str, text: str) -> dict[str, Any]:
+    from app.whatsapp_client import wa_send
+    return await wa_send(to, text)
+
+
+# ── System alerts ──────────────────────────────────────────────────────────
+
+
+async def system_alerts(limit: int = 20) -> dict[str, Any]:
+    from app.system_alert import get_alerts
+    return {"tool": "system_alerts", "ok": True, "result": get_alerts(limit)}
+
+
+# ── Contacts ───────────────────────────────────────────────────────────────
+
+
+async def contacts_search(query: str) -> dict[str, Any]:
+    from app.contacts import find_contacts
+    results = find_contacts(query)
+    return {"tool": "contacts_search", "ok": True, "result": results}
+
+
+async def contacts_list() -> dict[str, Any]:
+    from app.contacts import list_contacts
+    return {"tool": "contacts_list", "ok": True, "result": list_contacts()}
+
+
 # ── Registry ────────────────────────────────────────────────────────────────
 
 ToolFn = Callable[..., Awaitable[dict[str, Any]]]
@@ -378,6 +644,52 @@ REGISTRY: dict[str, ToolFn] = {
     "calendar_events": calendar_events,
     "calendar_create": calendar_create,
     "calendar_free_slots": calendar_free_slots,
+    # Web scraping
+    "web_scrape": web_scrape,
+    # Habits
+    "habit_status": habit_status,
+    "habit_log": habit_log,
+    "habit_create": habit_create,
+    # News
+    "news_digest": news_digest,
+    # Clipboard
+    "clipboard_save": clipboard_save,
+    "clipboard_search": clipboard_search,
+    # Planner
+    "plan_goal": plan_goal,
+    # Pomodoro
+    "pomodoro_start": pomodoro_start,
+    "pomodoro_stop": pomodoro_stop,
+    "pomodoro_status": pomodoro_status,
+    # System
+    "system_stats": system_stats,
+    # GitHub expanded
+    "github_list_prs": github_list_prs,
+    "github_pr_review": github_pr_review,
+    "github_recent_commits": github_recent_commits,
+    "github_repo_stats": github_repo_stats,
+    "github_commit_file": github_commit_file,
+    # Spotify
+    "spotify_current": spotify_current,
+    "spotify_toggle": spotify_toggle,
+    "spotify_skip_next": spotify_skip_next,
+    "spotify_skip_prev": spotify_skip_prev,
+    "spotify_volume": spotify_volume,
+    "spotify_play": spotify_play,
+    "spotify_play_for_mode": spotify_play_for_mode,
+    # Notion
+    "notion_search": notion_search,
+    "notion_page": notion_page,
+    "notion_sync_push": notion_sync_push,
+    # WhatsApp
+    "whatsapp_status": whatsapp_status,
+    "whatsapp_messages": whatsapp_messages,
+    "whatsapp_send": whatsapp_send,
+    # System alerts
+    "system_alerts": system_alerts,
+    # Contacts
+    "contacts_search": contacts_search,
+    "contacts_list": contacts_list,
 }
 
 

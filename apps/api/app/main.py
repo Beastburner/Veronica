@@ -6,8 +6,12 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import time
 import uuid
+from pathlib import Path
+
+import httpx
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 
@@ -66,6 +70,7 @@ from app.storage import (
     update_reminder_status,
     update_task_status,
 )
+from app.system_alert import start_watchdog, stop_watchdog
 from app.tools import REGISTRY as TOOL_REGISTRY
 from app.tools import execute_tool
 from app.transcribe import transcribe_bytes
@@ -100,16 +105,81 @@ def _compact_old_summaries(threshold: int = 5) -> int:
 _oauth_states: dict[str, str] = {}
 
 
+_whatsapp_proc: subprocess.Popen | None = None
+
+
+def _whatsapp_already_running() -> bool:
+    import httpx as _httpx
+    try:
+        r = _httpx.get("http://localhost:3001/status", timeout=1.0)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _find_node() -> str | None:
+    """Find the node binary — handles nvm/fnm/system installs on Windows."""
+    import shutil
+    # Direct PATH lookup first
+    node = shutil.which("node")
+    if node:
+        return node
+    # Common Windows install locations when PATH is not inherited
+    candidates = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe",
+        Path.home() / "AppData" / "Roaming" / "nvm" / "current" / "node.exe",
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return str(c)
+    return None
+
+
+def _launch_whatsapp() -> None:
+    global _whatsapp_proc
+    if _whatsapp_already_running():
+        log.info("WhatsApp service already running on port 3001 — reusing session")
+        return
+    wa_dir = Path(__file__).resolve().parent.parent.parent / "whatsapp"
+    if not (wa_dir / "index.js").exists():
+        log.warning("WhatsApp service not found at %s — skipping auto-start", wa_dir)
+        return
+    if not (wa_dir / "node_modules").exists():
+        log.warning("WhatsApp service deps missing — run: cd apps/whatsapp && npm install")
+        return
+    node = _find_node()
+    if not node:
+        log.warning("node not found in PATH or common install dirs — WhatsApp service not started")
+        return
+    try:
+        _whatsapp_proc = subprocess.Popen(
+            [node, "index.js"],
+            cwd=str(wa_dir),
+            stdout=None,
+            stderr=None,
+        )
+        log.info("WhatsApp service started (pid %d) via %s", _whatsapp_proc.pid, node)
+    except Exception:
+        log.exception("failed to start WhatsApp service")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    status = await asyncio.to_thread(ensure_ollama)
-    log.info("ollama bootstrap: %s", status)
+    if not settings.groq_api_key:
+        status = await asyncio.to_thread(ensure_ollama)
+        log.info("ollama bootstrap: %s", status)
+    else:
+        log.info("Groq configured — skipping Ollama auto-start (kept as offline fallback only)")
     asyncio.create_task(asyncio.to_thread(warm_up_whisper))
     asyncio.create_task(asyncio.to_thread(_run_compaction))
+    asyncio.create_task(asyncio.to_thread(_launch_whatsapp))
     from app import scheduler as _sched
     await asyncio.to_thread(_sched.start)
+    start_watchdog()
     yield
+    stop_watchdog()
     await asyncio.to_thread(_sched.stop)
 
 
@@ -203,7 +273,20 @@ async def _handle_pending_confirmation(
     # ── Confirm / cancel for email or calendar ───────────────────────────────
     if _CONFIRM_RE.match(msg):
         delete_pending_action(session_id)
-        result = await execute_tool(pending["tool"], pending["args"])
+        tool_args = dict(pending["args"])
+        # For calendar: resolve attendee names → emails, drop still-unresolved ones
+        if ptype == "calendar_confirm" and tool_args.get("attendees"):
+            from app.contacts import resolve_name_to_email
+            resolved = []
+            for a in tool_args["attendees"]:
+                if "@" in a:
+                    resolved.append(a)
+                else:
+                    email = resolve_name_to_email(a)
+                    if email:
+                        resolved.append(email)
+            tool_args["attendees"] = resolved or None
+        result = await execute_tool(pending["tool"], tool_args)
         if result.get("ok"):
             if ptype == "calendar_confirm":
                 title = pending["args"].get("title", "Meeting")
@@ -211,9 +294,26 @@ async def _handle_pending_confirmation(
                 detail = result.get("result", {})
                 meet = detail.get("meet_link", "")
                 cal_url = detail.get("html_link", "")
+                past_warn = result.get("past_warning", "")
                 extra = f"\nMeet: {meet}" if meet else "\n(No Meet link — personal Gmail account)"
                 extra += f"\nCalendar: {cal_url}" if cal_url else ""
+                extra += past_warn
                 return (f"Meeting '{title}' scheduled for {start}.{extra}", "meeting_scheduled")
+            if ptype == "wa_confirm":
+                to = pending["args"].get("to", "")
+                return (f"WhatsApp message sent to {to}, sir.", "wa_sent")
+            if ptype == "gh_issue_confirm":
+                r = result.get("result") or {}
+                num = r.get("number", "")
+                url = r.get("url", "")
+                title = r.get("title", "")
+                return (f"Issue #{num} '{title}' created, sir. {url}", "gh_issue_created")
+            if ptype == "gh_commit_confirm":
+                r = result.get("result") or {}
+                sha = r.get("sha", "")
+                path = r.get("path", "")
+                url = r.get("url", "")
+                return (f"Committed — {sha} · {path}. {url}", "gh_committed")
             to = pending["args"].get("to", "")
             subj = pending["args"].get("subject", "")
             return (f"Email sent to {to} — \"{subj}\".", "email_sent")
@@ -221,7 +321,13 @@ async def _handle_pending_confirmation(
 
     if _CANCEL_RE.match(msg):
         delete_pending_action(session_id)
-        return ("Meeting cancelled." if ptype == "calendar_confirm" else "Draft discarded.", "cancelled")
+        _cancel_msgs = {
+            "calendar_confirm": "Meeting cancelled.",
+            "wa_confirm": "WhatsApp message discarded.",
+            "gh_issue_confirm": "Issue creation cancelled.",
+            "gh_commit_confirm": "Commit cancelled.",
+        }
+        return (_cancel_msgs.get(ptype, "Draft discarded."), "cancelled")
 
     return None
 
@@ -269,6 +375,107 @@ async def clear_hot_cache() -> dict[str, object]:
     return {"status": "cleared", "cache": hot_cache.stats()}
 
 
+def _tool_direct_reply(tool: str, result: dict) -> str | None:
+    """Return a canned VERONICA reply for tools that don't need LLM formatting."""
+    if not result.get("ok"):
+        err = result.get("error", "unknown error")
+        if tool == "whatsapp_send":
+            return f"WhatsApp failed: {err}"
+        if tool == "web_search":
+            q = result.get("query", "that query")
+            return f"No results found for '{q}', sir."
+        labels = {
+            "spotify_play": "Spotify", "spotify_toggle": "Spotify",
+            "spotify_skip_next": "Spotify", "spotify_skip_prev": "Spotify",
+            "spotify_volume": "Spotify", "spotify_current": "Spotify",
+            "whatsapp_status": "WhatsApp", "whatsapp_messages": "WhatsApp",
+            "system_stats": "System", "system_alerts": "System",
+            "pomodoro_start": "Pomodoro", "pomodoro_stop": "Pomodoro", "pomodoro_status": "Pomodoro",
+        }
+        label = labels.get(tool)
+        if label:
+            return f"Sir, {label} returned an error: {err}"
+        return None
+
+    r = result.get("result") or {}
+
+    if tool == "spotify_play":
+        track = r.get("playing", "")
+        artist = r.get("artist", "")
+        return f"Playing '{track}' by {artist}, sir." if artist else f"Playing '{track}', sir."
+
+    if tool == "spotify_toggle":
+        action = r.get("action", "toggled")
+        return "Paused, sir." if action == "paused" else "Resuming playback, sir."
+
+    if tool == "spotify_skip_next":
+        return "Skipping to next track, sir."
+
+    if tool == "spotify_skip_prev":
+        return "Going back to previous track, sir."
+
+    if tool == "spotify_volume":
+        vol = r.get("volume_pct", "?")
+        return f"Volume set to {vol}%, sir."
+
+    if tool == "spotify_current":
+        if not r.get("playing"):
+            return "Nothing playing on Spotify right now, sir."
+        track = r.get("track", "Unknown")
+        artist = r.get("artist", "")
+        vol = r.get("volume")
+        vol_str = f" — volume {vol}%" if vol is not None else ""
+        return f"Currently playing '{track}' by {artist}{vol_str}, sir."
+
+    if tool == "whatsapp_send":
+        if not result.get("ok"):
+            err = result.get("error", "unknown error")
+            return f"WhatsApp send failed: {err}"
+        contact = result.get("to") or result.get("contact", "")
+        return f"WhatsApp message sent{f' to {contact}' if contact else ''}, sir."
+
+    if tool == "whatsapp_status":
+        ready = result.get("ready", False)
+        return "WhatsApp is connected and ready, sir." if ready else "WhatsApp is not connected, sir."
+
+    if tool == "create_issue":
+        r2 = result.get("result") or {}
+        num = r2.get("number", "")
+        url = r2.get("url", "")
+        title = r2.get("title", "")
+        return f"Issue #{num} '{title}' created, sir. {url}"
+
+    if tool == "pomodoro_start":
+        label = r.get("label", "Focus session")
+        dur = r.get("duration_minutes", 25)
+        return f"Pomodoro started: '{label}' for {dur} minutes, sir."
+
+    if tool == "pomodoro_stop":
+        return "Pomodoro session ended, sir."
+
+    if tool == "pomodoro_status":
+        if not r.get("active"):
+            return "No active Pomodoro session, sir."
+        label = r.get("label", "Session")
+        remaining = r.get("remaining_minutes")
+        return f"'{label}' — {remaining} minute(s) remaining, sir." if remaining else f"'{label}' is running, sir."
+
+    if tool == "system_stats":
+        cpu = r.get("cpu_percent", "?")
+        ram = r.get("ram_percent", "?")
+        disk = r.get("disk_percent", "?")
+        return f"System status — CPU: {cpu}%, RAM: {ram}%, Disk: {disk}%, sir."
+
+    if tool == "system_alerts":
+        alerts = result.get("result") or []
+        if not alerts:
+            return "No system alerts triggered, sir."
+        summary = "; ".join(f"{a['resource']} at {a['value']:.0f}%" for a in alerts[:3])
+        return f"Sir, {len(alerts)} alert(s): {summary}."
+
+    return None
+
+
 def _direct_response(
     *,
     mode,
@@ -300,7 +507,7 @@ async def chat(
     if float(window.get_context()["utilization_pct"]) > 90:
         window.compress_old_messages(keep_last=3)
 
-    # ── Pending email confirmation check ────────────────────────────────────
+    # ── Pending email/calendar confirmation — must run BEFORE intent routing ──
     pending_outcome = await _handle_pending_confirmation(session_id, request.message)
     if pending_outcome is not None:
         text, pstatus = pending_outcome
@@ -310,6 +517,12 @@ async def chat(
         return response
 
     intent = classify(request.message)
+
+    try:
+        from app.behavior import record_interaction
+        record_interaction(request.message, intent.type, request.mode.value)
+    except Exception:
+        pass
 
     if intent.type == "write":
         kind = intent.payload.get("kind", "item")
@@ -354,7 +567,7 @@ async def chat(
         tool_name = intent.payload.get("tool")
         args = intent.payload.get("args") or {}
 
-        # ── Confirm-before-act flow (email + calendar) ─────────────────────
+        # ── Confirm-before-act flow (email + calendar + whatsapp + github issue) ─
         if intent.payload.get("confirm_first"):
             if tool_name == "gmail_send":
                 to = args.get("to", "")
@@ -363,20 +576,54 @@ async def chat(
                 preview = f"To: {to}\nSubject: {subj}\n\n{body}"
                 save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
                 text = f"Here's the draft, sir:\n\n{preview}\n\nSend this?"
+                pstatus = "draft_preview"
             elif tool_name == "calendar_create":
                 title = args.get("title", "")
                 start = args.get("start_datetime", "")
                 attendees = args.get("attendees") or []
-                with_str = f"\nAttendees: {', '.join(attendees)}" if attendees else ""
+                _fake_domains = {"example.com", "example.org", "test.com", "fake.com"}
+                display_attendees = []
+                for a in attendees:
+                    if "@" in a and a.split("@")[1].lower() in _fake_domains:
+                        display_attendees.append(a.split("@")[0].replace(".", " ").title())
+                    else:
+                        display_attendees.append(a)
+                with_str = f"\nAttendees: {', '.join(display_attendees)}" if display_attendees else ""
                 preview = f"Title: {title}\nTime: {start}{with_str}"
-                save_pending_action(session_id, {"type": "calendar_confirm", "tool": "calendar_create", "args": args})
+                clean_args = dict(args)
+                clean_args["attendees"] = display_attendees or None
+                save_pending_action(session_id, {"type": "calendar_confirm", "tool": "calendar_create", "args": clean_args})
                 text = f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?"
+                pstatus = "calendar_preview"
+            elif tool_name == "whatsapp_send":
+                to = args.get("to", "")
+                msg = args.get("text", "")
+                save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": args})
+                text = f"Send this WhatsApp message, sir?\n\nTo: {to}\n\n{msg}"
+                pstatus = "wa_preview"
+            elif tool_name == "create_issue":
+                repo = args.get("repo", "")
+                title = args.get("title", "")
+                save_pending_action(session_id, {"type": "gh_issue_confirm", "tool": "create_issue", "args": args})
+                text = f"Create this GitHub issue, sir?\n\nRepo: {repo}\nTitle: {title}"
+                pstatus = "gh_issue_preview"
+            elif tool_name == "github_commit_file":
+                repo = args.get("repo", "")
+                path = args.get("path", "")
+                message = args.get("message", "")
+                branch = args.get("branch", "main")
+                content_preview = (args.get("content") or "")[:120]
+                if len(args.get("content", "")) > 120:
+                    content_preview += "…"
+                save_pending_action(session_id, {"type": "gh_commit_confirm", "tool": "github_commit_file", "args": args})
+                text = f"Commit this to GitHub, sir?\n\nRepo: {repo}\nFile: {path}\nBranch: {branch}\nMessage: {message}\n\n{content_preview}"
+                pstatus = "gh_commit_preview"
             else:
                 text = None
+                pstatus = "preview"
             if text:
-                pstatus = "draft_preview" if tool_name == "gmail_send" else "calendar_preview"
                 response = _direct_response(mode=request.mode, text=text, provider_status=pstatus,
-                                            suggested=["Yes, do it", "Cancel"])
+                                            suggested=["Yes, commit it", "Cancel"])
                 window.add_message("assistant", text)
                 log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
                 return response
@@ -384,9 +631,14 @@ async def chat(
         if tool_name in TOOL_REGISTRY:
             result = await execute_tool(tool_name, args)
             tool_results.append(result)
-            # After a successful draft → store so "send it" works next turn
             if tool_name == "gmail_draft" and result.get("ok"):
                 save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
+            # Short-circuit: tools with canned replies bypass the LLM entirely
+            direct_text = _tool_direct_reply(tool_name, result)
+            if direct_text:
+                window.add_message("assistant", direct_text)
+                log_action("VERONICA", f"chat:{request.mode.value}:tool_direct:{tool_name}", "low", True, direct_text[:240])
+                return _direct_response(mode=request.mode, text=direct_text, provider_status="tool_direct", suggested=[])
 
     forced_protocol = intent.payload.get("protocol") if intent.type == "protocol" else None
 
@@ -424,11 +676,6 @@ async def chat_stream(
     if float(window.get_context()["utilization_pct"]) > 90:
         window.compress_old_messages(keep_last=3)
 
-    # ── Pending email confirmation check ────────────────────────────────────
-    pending_outcome = await _handle_pending_confirmation(session_id, request.message)
-
-    intent = classify(request.message)
-
     async def emit_single(text: str, provider_status: str) -> "StreamingResponse":
         async def gen():
             yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
@@ -447,6 +694,22 @@ async def chat_stream(
             )
 
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    # ── Pending confirmation FIRST — before any intent routing ───────────────
+    pending_outcome = await _handle_pending_confirmation(session_id, request.message)
+    if pending_outcome is not None:
+        text, pstatus = pending_outcome
+        window.add_message("assistant", text)
+        log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
+        return await emit_single(text, pstatus)
+
+    intent = classify(request.message)
+
+    try:
+        from app.behavior import record_interaction
+        record_interaction(request.message, intent.type, request.mode.value)
+    except Exception:
+        pass
 
     if intent.type == "write":
         kind = intent.payload.get("kind", "item")
@@ -467,19 +730,12 @@ async def chat_stream(
         log_action("VERONICA", f"chat:{request.mode.value}:{intent.type}", "low", True, message_text[:240])
         return await emit_single(message_text, "direct_data")
 
-    # ── Emit pending confirmation result (stream) ────────────────────────────
-    if pending_outcome is not None:
-        text, pstatus = pending_outcome
-        window.add_message("assistant", text)
-        log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
-        return await emit_single(text, pstatus)
-
     tool_results: list[dict] = []
     if intent.type == "tool":
         tool_name = intent.payload.get("tool")
         args = intent.payload.get("args") or {}
 
-        # ── Confirm-before-act flow (email + calendar, stream) ─────────────
+        # ── Confirm-before-act flow (email + calendar + whatsapp + github issue, stream) ─
         if intent.payload.get("confirm_first"):
             if tool_name == "gmail_send":
                 to = args.get("to", "")
@@ -493,14 +749,46 @@ async def chat_stream(
                 title = args.get("title", "")
                 start = args.get("start_datetime", "")
                 attendees = args.get("attendees") or []
-                with_str = f"\nAttendees: {', '.join(attendees)}" if attendees else ""
+                _fake_domains = {"example.com", "example.org", "test.com", "fake.com"}
+                display_attendees = []
+                for a in attendees:
+                    if "@" in a and a.split("@")[1].lower() in _fake_domains:
+                        display_attendees.append(a.split("@")[0].replace(".", " ").title())
+                    else:
+                        display_attendees.append(a)
+                with_str = f"\nAttendees: {', '.join(display_attendees)}" if display_attendees else ""
                 preview = f"Title: {title}\nTime: {start}{with_str}"
-                save_pending_action(session_id, {"type": "calendar_confirm", "tool": "calendar_create", "args": args})
+                clean_args = dict(args)
+                clean_args["attendees"] = display_attendees or None
+                save_pending_action(session_id, {"type": "calendar_confirm", "tool": "calendar_create", "args": clean_args})
                 text = f"Here's the meeting, sir:\n\n{preview}\n\nSchedule this?"
                 pstatus = "calendar_preview"
+            elif tool_name == "whatsapp_send":
+                to = args.get("to", "")
+                msg = args.get("text", "")
+                save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": args})
+                text = f"Send this WhatsApp message, sir?\n\nTo: {to}\n\n{msg}"
+                pstatus = "wa_preview"
+            elif tool_name == "create_issue":
+                repo = args.get("repo", "")
+                title = args.get("title", "")
+                save_pending_action(session_id, {"type": "gh_issue_confirm", "tool": "create_issue", "args": args})
+                text = f"Create this GitHub issue, sir?\n\nRepo: {repo}\nTitle: {title}"
+                pstatus = "gh_issue_preview"
+            elif tool_name == "github_commit_file":
+                repo = args.get("repo", "")
+                path = args.get("path", "")
+                message = args.get("message", "")
+                branch = args.get("branch", "main")
+                content_preview = (args.get("content") or "")[:120]
+                if len(args.get("content", "")) > 120:
+                    content_preview += "…"
+                save_pending_action(session_id, {"type": "gh_commit_confirm", "tool": "github_commit_file", "args": args})
+                text = f"Commit this to GitHub, sir?\n\nRepo: {repo}\nFile: {path}\nBranch: {branch}\nMessage: {message}\n\n{content_preview}"
+                pstatus = "gh_commit_preview"
             else:
                 text = None
-                pstatus = "draft_preview"
+                pstatus = "preview"
             if text:
                 window.add_message("assistant", text)
                 log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
@@ -511,6 +799,12 @@ async def chat_stream(
             tool_results.append(result)
             if tool_name == "gmail_draft" and result.get("ok"):
                 save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
+            # Short-circuit: tools with canned replies bypass the LLM entirely
+            direct_text = _tool_direct_reply(tool_name, result)
+            if direct_text:
+                window.add_message("assistant", direct_text)
+                log_action("VERONICA", f"chat:{request.mode.value}:tool_direct:{tool_name}", "low", True, direct_text[:240])
+                return await emit_single(direct_text, "tool_direct")
 
     forced_protocol = intent.payload.get("protocol") if intent.type == "protocol" else None
 
@@ -758,6 +1052,18 @@ async def transcribe(audio: UploadFile = File(...)) -> dict[str, str]:
             suffix = ".m4a"
     text = await asyncio.to_thread(transcribe_bytes, data, suffix)
     return {"text": text}
+
+
+@app.post("/tts/edge")
+async def tts_edge(payload: dict) -> StreamingResponse:
+    """edge-tts synthesis — free, no API key, same voice as the wake listener."""
+    from fastapi.responses import Response as _Resp
+    text = (payload or {}).get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    from app.tts import synthesize
+    audio = await synthesize(text)
+    return _Resp(content=audio, media_type="audio/mpeg")
 
 
 @app.post("/tts")
@@ -1029,3 +1335,592 @@ async def add_life_log_entry(payload: dict) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="title required")
     entry = log_entry(entry_type, title, content, (payload or {}).get("metadata"))
     return {"status": "created", "item": entry}
+
+
+# ── Behavior / learning ────────────────────────────────────────────────────
+
+
+@app.get("/behavior/insights")
+async def behavior_insights() -> dict[str, object]:
+    from app.behavior import get_behavior_summary, get_personalized_suggestions
+    summary = get_behavior_summary()
+    for mode in ("JARVIS", "FRIDAY", "VERONICA", "SENTINEL"):
+        summary[f"suggestions_{mode.lower()}"] = get_personalized_suggestions(mode)
+    return summary
+
+
+# ── Habits ─────────────────────────────────────────────────────────────────
+
+
+@app.get("/habits")
+async def list_habits_route(include_archived: bool = Query(False)) -> dict[str, object]:
+    from app.habits import list_habits, get_today_status
+    if not include_archived:
+        return {"items": get_today_status()}
+    return {"items": list_habits(include_archived=True)}
+
+
+@app.post("/habits")
+async def create_habit_route(payload: dict) -> dict[str, object]:
+    from app.habits import create_habit
+    name = (payload or {}).get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    habit = create_habit(
+        name,
+        description=(payload or {}).get("description", ""),
+        frequency=(payload or {}).get("frequency", "daily"),
+        color=(payload or {}).get("color", "#22d3ee"),
+    )
+    return {"status": "created", "item": habit}
+
+
+@app.post("/habits/{habit_id}/log")
+async def log_habit_route(habit_id: int, payload: dict = {}) -> dict[str, object]:
+    from app.habits import log_habit
+    result = log_habit(habit_id, note=(payload or {}).get("note", ""))
+    if not result.get("ok", True) and "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    log_entry("habit_logged", f"Habit {habit_id} logged", "")
+    return {"status": "logged", "item": result}
+
+
+@app.delete("/habits/{habit_id}")
+async def archive_habit_route(habit_id: int) -> dict[str, object]:
+    from app.habits import archive_habit
+    if not archive_habit(habit_id):
+        raise HTTPException(status_code=404, detail="Habit not found")
+    return {"status": "archived"}
+
+
+@app.get("/habits/{habit_id}/logs")
+async def habit_logs_route(habit_id: int, limit: int = Query(30, ge=1, le=100)) -> dict[str, object]:
+    from app.habits import get_habit_logs
+    return {"items": get_habit_logs(habit_id, limit=limit)}
+
+
+# ── News digest ─────────────────────────────────────────────────────────────
+
+
+@app.get("/news/feeds")
+async def list_feeds_route() -> dict[str, object]:
+    from app.news import list_feeds
+    return {"items": list_feeds()}
+
+
+@app.post("/news/feeds")
+async def add_feed_route(payload: dict) -> dict[str, object]:
+    from app.news import add_feed
+    url = (payload or {}).get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    return {"status": "created", "item": add_feed(
+        url,
+        title=(payload or {}).get("title", ""),
+        category=(payload or {}).get("category", "general"),
+    )}
+
+
+@app.delete("/news/feeds/{feed_id}")
+async def remove_feed_route(feed_id: int) -> dict[str, object]:
+    from app.news import remove_feed
+    if not remove_feed(feed_id):
+        raise HTTPException(status_code=404, detail="Feed not found")
+    return {"status": "deleted"}
+
+
+@app.get("/news/digest")
+async def news_digest_route(limit: int = Query(3, ge=1, le=10)) -> dict[str, object]:
+    from app.news import get_digest
+    return await asyncio.to_thread(get_digest, limit_per_feed=limit)
+
+
+# ── Clipboard ───────────────────────────────────────────────────────────────
+
+
+@app.get("/clipboard")
+async def list_clipboard_route(
+    limit: int = Query(20, ge=1, le=100),
+    tag: str | None = Query(default=None),
+) -> dict[str, object]:
+    from app.clipboard import list_clips
+    return {"items": list_clips(limit=limit, tag_filter=tag)}
+
+
+@app.post("/clipboard")
+async def save_clipboard_route(payload: dict) -> dict[str, object]:
+    from app.clipboard import save_clip
+    content = (payload or {}).get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    clip = save_clip(content, tags=(payload or {}).get("tags", ""), source=(payload or {}).get("source", "user"))
+    return {"status": "saved", "item": clip}
+
+
+@app.get("/clipboard/search")
+async def search_clipboard_route(q: str = Query(..., min_length=1)) -> dict[str, object]:
+    from app.clipboard import search_clips
+    return {"items": search_clips(q)}
+
+
+@app.delete("/clipboard/{clip_id}")
+async def delete_clipboard_route(clip_id: int) -> dict[str, object]:
+    from app.clipboard import delete_clip
+    if not delete_clip(clip_id):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return {"status": "deleted"}
+
+
+# ── Planner ─────────────────────────────────────────────────────────────────
+
+
+@app.post("/planner/decompose")
+async def planner_decompose(payload: dict) -> dict[str, object]:
+    from app.planner import decompose_goal
+    goal = (payload or {}).get("goal", "").strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="goal required")
+    auto_create = bool((payload or {}).get("auto_create", False))
+    result = await asyncio.to_thread(decompose_goal, goal, auto_create)
+    return result
+
+
+# ── Pomodoro ─────────────────────────────────────────────────────────────────
+
+
+@app.post("/pomodoro/start")
+async def pomodoro_start_route(payload: dict = {}) -> dict[str, object]:
+    from app.pomodoro import start_timer
+    label = (payload or {}).get("label", "Focus session")
+    duration = int((payload or {}).get("duration_minutes", 25))
+    return start_timer(label, duration)
+
+
+@app.post("/pomodoro/stop")
+async def pomodoro_stop_route(payload: dict = {}) -> dict[str, object]:
+    from app.pomodoro import stop_timer
+    completed = bool((payload or {}).get("completed", True))
+    return stop_timer(completed)
+
+
+@app.get("/pomodoro/status")
+async def pomodoro_status_route() -> dict[str, object]:
+    from app.pomodoro import get_status
+    return get_status()
+
+
+@app.get("/pomodoro/history")
+async def pomodoro_history_route(limit: int = Query(10, ge=1, le=50)) -> dict[str, object]:
+    from app.pomodoro import get_history
+    return {"items": get_history(limit=limit)}
+
+
+# ── System stats ─────────────────────────────────────────────────────────────
+
+
+@app.get("/system/stats")
+async def system_stats_route() -> dict[str, object]:
+    import psutil
+    cpu = psutil.cpu_percent(interval=0.2)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    return {
+        "cpu_percent": cpu,
+        "ram_used_gb": round(mem.used / 1e9, 2),
+        "ram_total_gb": round(mem.total / 1e9, 2),
+        "ram_percent": mem.percent,
+        "disk_used_gb": round(disk.used / 1e9, 2),
+        "disk_total_gb": round(disk.total / 1e9, 2),
+        "disk_percent": disk.percent,
+    }
+
+
+# ── Spotify OAuth ─────────────────────────────────────────────────────────
+
+_spotify_pkce_states: dict[str, str] = {}
+
+
+@app.get("/oauth/spotify/start")
+async def oauth_spotify_start():
+    client_id = settings.spotify_client_id
+    if not client_id:
+        raise HTTPException(status_code=503, detail="SPOTIFY_CLIENT_ID not configured in .env")
+    from app.spotify import pkce_pair, SPOTIFY_SCOPES
+    state = secrets.token_urlsafe(16)
+    verifier, challenge = pkce_pair()
+    _spotify_pkce_states[state] = verifier
+    params = {
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": settings.spotify_redirect_uri,
+        "scope": SPOTIFY_SCOPES,
+        "state": state,
+        "code_challenge_method": "S256",
+        "code_challenge": challenge,
+    }
+    from urllib.parse import urlencode
+    url = "https://accounts.spotify.com/authorize?" + urlencode(params)
+    return RedirectResponse(url=url)
+
+
+@app.get("/oauth/spotify/callback")
+async def oauth_spotify_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    if error:
+        return RedirectResponse(url=f"{settings.frontend_url}?oauth_error={error}")
+    if not code or state not in _spotify_pkce_states:
+        raise HTTPException(status_code=400, detail="Invalid Spotify OAuth callback")
+    verifier = _spotify_pkce_states.pop(state)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://accounts.spotify.com/api/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": settings.spotify_redirect_uri,
+                    "client_id": settings.spotify_client_id,
+                    "code_verifier": verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            r.raise_for_status()
+            data = r.json()
+        token = {
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token"),
+            "expires_at": time.time() + data.get("expires_in", 3600),
+        }
+        save_oauth_token("spotify", json.dumps(token))
+        log_entry("oauth_connected", "Spotify connected", "Music playback access granted")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Spotify OAuth failed: {exc}") from exc
+    return RedirectResponse(url=f"{settings.frontend_url}?connected=spotify")
+
+
+@app.delete("/oauth/spotify")
+async def oauth_spotify_disconnect() -> dict:
+    deleted = delete_oauth_token("spotify")
+    return {"status": "disconnected" if deleted else "not_connected"}
+
+
+# ── GitHub ────────────────────────────────────────────────────────────────
+
+
+@app.get("/github/repos")
+async def github_user_repos(limit: int = Query(30, ge=1, le=100)) -> dict:
+    from app.github import list_user_repos
+    return await list_user_repos(settings.github_username, limit)
+
+
+@app.get("/github/{owner}/{repo}/pulls")
+async def github_prs(owner: str, repo: str, state: str = Query("open")) -> dict:
+    from app.github import list_pull_requests
+    return await list_pull_requests(f"{owner}/{repo}", state)
+
+
+@app.get("/github/{owner}/{repo}/pulls/{pr_number}")
+async def github_pr(owner: str, repo: str, pr_number: int) -> dict:
+    from app.github import get_pr_review
+    return await get_pr_review(f"{owner}/{repo}", pr_number)
+
+
+@app.get("/github/{owner}/{repo}/commits")
+async def github_commits(owner: str, repo: str, limit: int = Query(5, ge=1, le=30)) -> dict:
+    from app.github import list_recent_commits
+    return await list_recent_commits(f"{owner}/{repo}", limit)
+
+
+@app.get("/github/{owner}/{repo}/stats")
+async def github_repo(owner: str, repo: str) -> dict:
+    from app.github import get_repo_stats
+    return await get_repo_stats(f"{owner}/{repo}")
+
+
+# ── Spotify ───────────────────────────────────────────────────────────────
+
+
+@app.get("/spotify/current")
+async def spotify_current_route() -> dict:
+    from app.spotify import get_current_track
+    return await get_current_track()
+
+
+@app.post("/spotify/play-pause")
+async def spotify_toggle_route() -> dict:
+    from app.spotify import spotify_play_pause
+    return await spotify_play_pause()
+
+
+@app.post("/spotify/next")
+async def spotify_next_route() -> dict:
+    from app.spotify import spotify_next
+    return await spotify_next()
+
+
+@app.post("/spotify/prev")
+async def spotify_prev_route() -> dict:
+    from app.spotify import spotify_prev
+    return await spotify_prev()
+
+
+@app.put("/spotify/volume")
+async def spotify_volume_route(payload: dict) -> dict:
+    from app.spotify import spotify_set_volume
+    return await spotify_set_volume(int((payload or {}).get("volume_pct", 50)))
+
+
+@app.post("/spotify/play")
+async def spotify_play_route(payload: dict) -> dict:
+    from app.spotify import spotify_search_play
+    query = (payload or {}).get("query", "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query required")
+    return await spotify_search_play(query)
+
+
+@app.get("/spotify/status")
+async def spotify_status_route() -> dict:
+    from app.oauth_store import load_oauth_token
+    token = load_oauth_token("spotify")
+    configured = bool(settings.spotify_client_id)
+    return {"connected": bool(token), "configured": configured}
+
+
+# ── System alerts ──────────────────────────────────────────────────────────
+
+
+@app.get("/system/alerts")
+async def system_alerts_route(limit: int = Query(20, ge=1, le=100)) -> dict:
+    from app.system_alert import get_alerts
+    return {"items": get_alerts(limit)}
+
+
+@app.get("/system/alerts/thresholds")
+async def alert_thresholds_route() -> dict:
+    from app.system_alert import get_thresholds
+    return get_thresholds()
+
+
+@app.put("/system/alerts/thresholds")
+async def set_alert_thresholds_route(payload: dict) -> dict:
+    from app.system_alert import set_thresholds
+    return set_thresholds(
+        cpu=payload.get("cpu_percent"),
+        ram=payload.get("ram_percent"),
+        disk=payload.get("disk_percent"),
+    )
+
+
+# ── WhatsApp ──────────────────────────────────────────────────────────────
+
+
+@app.get("/whatsapp/status")
+async def wa_status_route() -> dict:
+    from app.whatsapp_client import wa_status
+    return await wa_status()
+
+
+@app.post("/whatsapp/start")
+async def wa_start_route() -> dict:
+    """Trigger WhatsApp service launch if not already running."""
+    await asyncio.to_thread(_launch_whatsapp)
+    await asyncio.sleep(2)
+    from app.whatsapp_client import wa_status
+    status = await wa_status()
+    return {"triggered": True, "status": status}
+
+
+def _kill_port_3001() -> None:
+    """Kill whatever process is listening on port 3001 (Windows + Unix)."""
+    global _whatsapp_proc
+    # Kill tracked subprocess first
+    if _whatsapp_proc and _whatsapp_proc.poll() is None:
+        _whatsapp_proc.terminate()
+        try:
+            _whatsapp_proc.wait(timeout=5)
+        except Exception:
+            _whatsapp_proc.kill()
+        _whatsapp_proc = None
+    # Kill by port PID (handles processes we don't have a reference to)
+    try:
+        if os.name == "nt":
+            out = subprocess.check_output(
+                ["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL
+            )
+            pids = set()
+            for line in out.splitlines():
+                if ":3001 " in line and ("LISTENING" in line or "ESTABLISHED" in line):
+                    parts = line.split()
+                    if parts:
+                        try:
+                            pids.add(int(parts[-1]))
+                        except ValueError:
+                            pass
+            for pid in pids:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                except Exception:
+                    pass
+        else:
+            subprocess.run(
+                ["fuser", "-k", "3001/tcp"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+    except Exception:
+        pass
+
+
+@app.post("/whatsapp/reset")
+async def wa_reset_route() -> dict:
+    """Kill the WhatsApp Node service, clear session, restart for a fresh QR."""
+    import shutil as _shutil
+    # Try graceful in-process reset first (works with updated index.js)
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post("http://localhost:3001/reset")
+            if r.status_code == 200:
+                return r.json()
+    except Exception:
+        pass
+    # Kill whatever is on port 3001
+    await asyncio.to_thread(_kill_port_3001)
+    await asyncio.sleep(1)
+    # Clear stale session so a fresh QR appears
+    session_dir = Path.home() / ".veronica-wa-session" / "session-veronica"
+    if session_dir.exists():
+        _shutil.rmtree(session_dir, ignore_errors=True)
+    # Start fresh
+    await asyncio.to_thread(_launch_whatsapp)
+    return {"ok": True, "message": "WhatsApp service restarted — new QR will appear shortly"}
+
+
+@app.get("/whatsapp/qr")
+async def wa_qr_route() -> dict:
+    from app.whatsapp_client import wa_qr
+    return await wa_qr()
+
+
+@app.get("/whatsapp/messages")
+async def wa_messages_route(limit: int = Query(20, ge=1, le=100)) -> dict:
+    from app.whatsapp_client import wa_messages
+    return await wa_messages(limit)
+
+
+@app.post("/whatsapp/send")
+async def wa_send_route(payload: dict) -> dict:
+    to = (payload or {}).get("to", "").strip()
+    text = (payload or {}).get("text", "").strip()
+    if not to or not text:
+        raise HTTPException(status_code=400, detail="to and text required")
+    from app.whatsapp_client import wa_send
+    return await wa_send(to, text)
+
+
+# ── Notion ────────────────────────────────────────────────────────────────
+
+
+@app.get("/notion/search")
+async def notion_search_route(q: str = Query(..., min_length=1)) -> dict:
+    from app.notion import search_notion
+    return await search_notion(q)
+
+
+@app.get("/notion/page/{page_id}")
+async def notion_page_route(page_id: str) -> dict:
+    from app.notion import get_notion_page
+    return await get_notion_page(page_id)
+
+
+@app.get("/contacts")
+async def list_contacts_route(limit: int = Query(100, ge=1, le=500)) -> dict[str, object]:
+    from app.contacts import list_contacts
+    return {"items": list_contacts(limit=limit)}
+
+
+@app.get("/contacts/search")
+async def search_contacts_route(q: str = Query(..., min_length=1)) -> dict[str, object]:
+    from app.contacts import find_contacts
+    return {"items": find_contacts(q)}
+
+
+@app.post("/contacts")
+async def add_contact_route(payload: dict) -> dict[str, object]:
+    name = (payload or {}).get("name", "").strip()
+    email = (payload or {}).get("email", "").strip()
+    if not name or not email:
+        raise HTTPException(status_code=400, detail="name and email required")
+    from app.contacts import upsert_contact
+    return {"status": "saved", "item": upsert_contact(name, email, source="manual")}
+
+
+@app.post("/notion/sync")
+async def notion_sync_route(payload: dict) -> dict:
+    database_id = (payload or {}).get("database_id", "").strip()
+    if not database_id:
+        raise HTTPException(status_code=400, detail="database_id required")
+    from app.notion import sync_notes_to_notion
+    return await sync_notes_to_notion(database_id)
+
+
+# ── Wake word event bus ───────────────────────────────────────────────────────
+# wake_listener.py publishes stages here; frontend subscribes via SSE.
+
+_wake_subscribers: list[asyncio.Queue] = []
+_wake_last_event: dict = {"stage": "idle", "text": "", "response": ""}
+
+
+@app.post("/wake/event")
+async def wake_event(payload: dict) -> dict[str, object]:
+    """
+    Called by wake_listener.py to broadcast voice-pipeline stages.
+    payload: { stage: "detected"|"transcribed"|"replied"|"idle", text?: str, response?: str }
+    """
+    stage    = (payload or {}).get("stage", "idle")
+    text     = (payload or {}).get("text", "")
+    response = (payload or {}).get("response", "")
+
+    _wake_last_event.update(stage=stage, text=text, response=response)
+
+    event = json.dumps({"stage": stage, "text": text, "response": response})
+    dead: list[asyncio.Queue] = []
+    for q in _wake_subscribers:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        _wake_subscribers.remove(q)
+
+    return {"ok": True}
+
+
+@app.get("/wake/stream")
+async def wake_stream():
+    """SSE stream — frontend subscribes to get real-time wake word events."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=20)
+    _wake_subscribers.append(q)
+
+    async def event_gen():
+        # Send current state immediately on connect
+        yield f"data: {json.dumps(_wake_last_event)}\n\n"
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=25)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if q in _wake_subscribers:
+                _wake_subscribers.remove(q)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")

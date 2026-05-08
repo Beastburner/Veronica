@@ -106,12 +106,93 @@ def init_db() -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL DEFAULT 'auto',
+            interaction_count INTEGER NOT NULL DEFAULT 1,
+            last_seen TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts (email);
+        CREATE INDEX IF NOT EXISTS idx_contacts_name  ON contacts (name COLLATE NOCASE);
+
+        CREATE TABLE IF NOT EXISTS habits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            frequency TEXT NOT NULL DEFAULT 'daily',
+            color TEXT NOT NULL DEFAULT '#22d3ee',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS habit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            habit_id INTEGER NOT NULL REFERENCES habits(id),
+            logged_at TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS rss_feeds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL DEFAULT '',
+            url TEXT NOT NULL UNIQUE,
+            category TEXT NOT NULL DEFAULT 'general',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS clipboard_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            tags TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL DEFAULT 'Focus session',
+            duration_minutes INTEGER NOT NULL DEFAULT 25,
+            completed INTEGER NOT NULL DEFAULT 0,
+            interrupted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS behavior_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic TEXT NOT NULL DEFAULT '',
+            intent_type TEXT NOT NULL DEFAULT '',
+            mode TEXT NOT NULL DEFAULT '',
+            hour_of_day INTEGER NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS system_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            resource TEXT NOT NULL,
+            value REAL NOT NULL,
+            threshold REAL NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_system_alerts_created ON system_alerts (created_at DESC);
+
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
         CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders (status);
         CREATE INDEX IF NOT EXISTS idx_conv_summaries_session ON conversation_summaries (session_id);
         CREATE INDEX IF NOT EXISTS idx_memories_created ON memories (created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_life_log_type ON life_log (entry_type);
         CREATE INDEX IF NOT EXISTS idx_life_log_created ON life_log (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_behavior_hour ON behavior_events (hour_of_day);
+        CREATE INDEX IF NOT EXISTS idx_behavior_created ON behavior_events (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_habit_logs_habit ON habit_logs (habit_id);
+        CREATE INDEX IF NOT EXISTS idx_habit_logs_date ON habit_logs (logged_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_pomodoro_created ON pomodoro_sessions (created_at DESC);
         """
     )
 

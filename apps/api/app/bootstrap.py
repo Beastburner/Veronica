@@ -15,9 +15,7 @@ log = logging.getLogger("veronica.bootstrap")
 
 
 def _ollama_host() -> tuple[str, int] | None:
-    base = settings.openai_base_url or ""
-    if "11434" not in base and "ollama" not in base.lower():
-        return None
+    base = settings.ollama_base_url or ""
     parsed = urlparse(base)
     return parsed.hostname or "127.0.0.1", parsed.port or 11434
 
@@ -96,7 +94,7 @@ def ensure_ollama() -> dict[str, object]:
         else:
             return {"managed": True, "started": True, "running": False, "reason": "ollama did not become ready in 20s"}
 
-    model = settings.openai_model
+    model = settings.ollama_model
     has_model = _model_present(host, port, model)
     if not has_model:
         log.info("pulling ollama model %s (first run)...", model)

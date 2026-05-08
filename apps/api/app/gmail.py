@@ -84,6 +84,11 @@ async def list_inbox(max_results: int = 10) -> dict[str, Any]:
                 .execute()
             )
             headers = detail.get("payload", {}).get("headers", [])
+            try:
+                from app.contacts import ingest_gmail_headers
+                ingest_gmail_headers(headers)
+            except Exception:
+                pass
             items.append(
                 {
                     "id": msg["id"],
@@ -109,6 +114,11 @@ async def read_email(message_id: str) -> dict[str, Any]:
         )
         headers = detail.get("payload", {}).get("headers", [])
         body = _decode_body(detail.get("payload", {}))
+        try:
+            from app.contacts import ingest_gmail_headers
+            ingest_gmail_headers(headers)
+        except Exception:
+            pass
         return {
             "tool": "read_email",
             "ok": True,

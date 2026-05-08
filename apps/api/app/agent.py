@@ -95,9 +95,11 @@ HARD RULES (apply in ALL modes, no exceptions):
 - NEVER use filler like "I understand", "I see", "Noted".
 - NEVER pad a short answer with unnecessary context.
 - If you don't know something, say so directly. Never hallucinate facts.
-- You run on a local Ollama model. You have NO internet access unless
-  a tool result is explicitly injected into this conversation.
-  Do NOT pretend to have live data you were not given.
+- You have tools that can access the internet (web_search, web_scrape, news_digest,
+  weather, GitHub, Gmail, Calendar). These tools run server-side — you DO have
+  internet access via these tools. NEVER say "I have no internet access."
+- When a tool result is injected, use it. When no tool result is present, do not
+  invent live data — say you need to run a search instead.
 - Keep responses under 150 words unless the user asks for detail.
 - When the user is about to make a mistake you recognize, say so once,
   clearly, without lecturing.
@@ -112,9 +114,9 @@ HARD RULES (apply in ALL modes, no exceptions):
 
 
 _FALLBACK_REASON: dict[str, str] = {
-    "not_configured": "No model provider configured. Set OPENROUTER_API_KEYS or OPENAI_API_KEY in .env.",
-    "rate_limited":   "All available API keys are currently rate-limited. Try again in a moment.",
-    "offline":        "Model endpoint is unreachable. Check network or provider status.",
+    "not_configured":  "No model provider configured. Set OPENROUTER_API_KEYS or OPENAI_API_KEY in .env.",
+    "rate_limited":    "All available API keys are currently rate-limited. Try again in a moment.",
+    "offline":         "Ollama is unreachable. Run: ollama serve",
 }
 
 
@@ -123,7 +125,11 @@ def local_fallback_response(request: ChatRequest, protocol: str | None, tool_pla
         reason = _FALLBACK_REASON[provider_status]
     elif provider_status.startswith("error:"):
         code = provider_status.split(":", 1)[1]
-        reason = f"API returned error {code}. Check your key and model name in .env."
+        if code == "500":
+            from app.config import settings as _cfg
+            reason = f"Ollama returned 500 — model not loaded. Run: ollama pull {_cfg.ollama_model}"
+        else:
+            reason = f"Ollama returned HTTP {code}."
     else:
         reason = "Model unavailable."
     return f"Sir, inference offline. {reason}"
@@ -186,6 +192,20 @@ def summarize_turns(turns: list[dict[str, str]], mode: str) -> str:
 
 
 def get_suggested_actions(mode: AssistantMode, protocol: str | None) -> list[str]:
+    try:
+        from app.behavior import get_personalized_suggestions
+        suggestions = get_personalized_suggestions(mode.value.upper())
+        if suggestions:
+            if protocol == "coding":
+                suggestions.insert(0, "Paste or attach code for immediate analysis.")
+            elif protocol == "security":
+                suggestions.insert(0, "Specify the target surface for the security sweep.")
+            elif protocol == "focus":
+                suggestions.insert(0, "Tell VERONICA what your #1 priority is right now.")
+            return suggestions[:3]
+    except Exception:
+        pass
+
     base = {
         AssistantMode.jarvis: [
             "Request a full system architecture overview.",

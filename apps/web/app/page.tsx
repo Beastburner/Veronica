@@ -6,6 +6,7 @@ import React, { FormEvent, useCallback, useMemo, useRef, useState } from "react"
 import { ArcCore } from "@/components/ArcCore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OperationsPanels } from "@/components/OperationsPanels";
+// import VoicePanel from "@/components/VoicePanel"; // NOT IN USE — wake word listener disabled
 import { VoiceInterface } from "@/components/VoiceInterface";
 import { useMemoryEfficientState } from "@/hooks/useMemoryEfficientState";
 import { useMounted } from "@/hooks/useMounted";
@@ -317,18 +318,17 @@ export default function Home() {
         <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-900/30 px-4 py-2 text-sm text-amber-200">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>
-            No LLM key configured. Add one to <code className="font-mono text-xs text-amber-100">apps/api/.env</code>:&nbsp;
-            <code className="font-mono text-xs text-amber-100">OPENROUTER_API_KEYS=sk-or-...</code>
-            &nbsp;or&nbsp;
-            <code className="font-mono text-xs text-amber-100">OPENAI_API_KEY=sk-...</code>
-            &nbsp;then restart the API.
+            Ollama not reachable. Make sure Ollama is running:&nbsp;
+            <code className="font-mono text-xs text-amber-100">ollama serve</code>
+            &nbsp;— then pull your model:&nbsp;
+            <code className="font-mono text-xs text-amber-100">ollama pull qwen2.5:7b</code>
           </span>
         </div>
       )}
       {allRateLimited && (
         <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-center gap-2 rounded-lg border border-orange-500/40 bg-orange-900/30 px-4 py-2 text-sm text-orange-200">
           <AlertTriangle size={14} className="shrink-0" />
-          All API keys are rate-limited. VERONICA will retry automatically in ~5 minutes.
+          Ollama is unreachable or the model is not loaded. Check that <code className="font-mono text-xs ml-1">ollama serve</code> is running.
         </div>
       )}
 
@@ -386,57 +386,7 @@ export default function Home() {
           )}
 
           {/* Telemetry -- Step 1 real data */}
-          <motion.div
-            {...(mounted ? fade(60) : {})}
-            className="mt-5 rounded-lg border border-white/10 bg-black/20 p-3"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <p className="flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-                <Activity size={16} /> System Monitor
-              </p>
-              <span
-                className={`rounded px-2 py-0.5 text-[10px] font-semibold tracking-[0.18em] ${
-                  apiOffline ? "bg-pink-500/20 text-pink-200" : "bg-emerald-500/15 text-emerald-200"
-                }`}
-              >
-                {apiOffline ? "OFFLINE" : "ONLINE"}
-              </span>
-            </div>
-            <div className="space-y-2 text-xs">
-              <Row label="Model" value={telemetry.model?.model ?? "--"} />
-              <Row
-                label="OpenRouter"
-                value={
-                  !telemetry.model ? "--"
-                  : (telemetry.model as Record<string,unknown>).primary_ok ? "online ✓"
-                  : (telemetry.model as Record<string,unknown>).provider_key_present ? "rate-limited"
-                  : "not configured"
-                }
-              />
-              <Row
-                label="Ollama"
-                value={
-                  !telemetry.model ? "--"
-                  : (telemetry.model as Record<string,unknown>).fallback_ok
-                    ? `${(telemetry.model as Record<string,unknown>).fallback_model ?? "local"} ✓`
-                    : "not configured"
-                }
-              />
-              <Row
-                label="RSS"
-                value={telemetry.system ? `${telemetry.system.stats.rss_mb.toFixed(0)} MB` : "--"}
-              />
-              <Row
-                label="Sessions"
-                value={telemetry.system?.active_sessions != null ? String(telemetry.system.active_sessions) : "--"}
-              />
-              <Row
-                label="Health latency"
-                value={telemetry.latencyMs != null ? `${telemetry.latencyMs} ms` : "--"}
-              />
-              <Row label="Last reply" value={chatLatency != null ? `${chatLatency} ms` : "--"} />
-            </div>
-          </motion.div>
+          <SystemMonitor apiOffline={apiOffline} model={telemetry.model} system={telemetry.system} latencyMs={telemetry.latencyMs} chatLatency={chatLatency} mounted={mounted} />
         </motion.aside>
 
         {/* ── CENTER ────────────────────────────────────── */}
@@ -585,6 +535,12 @@ export default function Home() {
               ))}
             </div>
           </motion.div>
+
+          <motion.div {...(mounted ? fade(480) : {})}>
+            <PomodoroWidget onSend={(msg) => void sendMessage(msg)} />
+          </motion.div>
+
+          {/* <VoicePanel /> — NOT IN USE */}
         </aside>
       </div>
     </main>
@@ -598,6 +554,127 @@ function Row({ label, value, title }: { label: string; value: string; title?: st
       <span className="truncate text-right text-slate-200" style={{ maxWidth: "60%" }}>
         {value}
       </span>
+    </div>
+  );
+}
+
+type SysStats = { cpu_percent: number; ram_percent: number; ram_used_gb: number; ram_total_gb: number; disk_percent: number; disk_used_gb: number; disk_total_gb: number } | null;
+
+function SystemMonitor({
+  apiOffline, model, system, latencyMs, chatLatency, mounted,
+}: {
+  apiOffline: boolean;
+  model: Record<string, unknown> | null | undefined;
+  system: Record<string, unknown> | null | undefined;
+  latencyMs: number | null | undefined;
+  chatLatency: number | null;
+  mounted: boolean;
+}) {
+  const [stats, setStats] = React.useState<SysStats>(null);
+  const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+  React.useEffect(() => {
+    if (apiOffline) return;
+    const load = () => fetch(`${API}/system/stats`).then((r) => r.ok ? r.json() : null).then((d) => { if (d) setStats(d); }).catch(() => null);
+    load();
+    const iv = setInterval(load, 10000);
+    return () => clearInterval(iv);
+  }, [apiOffline]);
+
+  const bar = (pct: number) => (
+    <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+      <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, background: pct > 85 ? "#f87171" : pct > 60 ? "#fb923c" : "var(--accent-strong)" }} />
+    </div>
+  );
+
+  const m = model as Record<string, unknown> | null | undefined;
+
+  return (
+    <motion.div {...(mounted ? fade(60) : {})} className="mt-5 rounded-lg border border-white/10 bg-black/20 p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
+          <Activity size={16} /> System Monitor
+        </p>
+        <span className={`rounded px-2 py-0.5 text-[10px] font-semibold tracking-[0.18em] ${apiOffline ? "bg-pink-500/20 text-pink-200" : "bg-emerald-500/15 text-emerald-200"}`}>
+          {apiOffline ? "OFFLINE" : "ONLINE"}
+        </span>
+      </div>
+      <div className="space-y-2 text-xs">
+        <Row label="Model" value={m?.model ? String(m.model) : "--"} />
+        <Row label="Ollama" value={!m ? "--" : m.running ? "running ✓" : "unreachable"} />
+        {stats && (
+          <>
+            <div>
+              <div className="flex justify-between mb-0.5"><span className="text-slate-400">CPU</span><span className="text-slate-200">{stats.cpu_percent.toFixed(0)}%</span></div>
+              {bar(stats.cpu_percent)}
+            </div>
+            <div>
+              <div className="flex justify-between mb-0.5"><span className="text-slate-400">RAM</span><span className="text-slate-200">{stats.ram_used_gb}/{stats.ram_total_gb} GB</span></div>
+              {bar(stats.ram_percent)}
+            </div>
+            <div>
+              <div className="flex justify-between mb-0.5"><span className="text-slate-400">Disk</span><span className="text-slate-200">{stats.disk_used_gb}/{stats.disk_total_gb} GB</span></div>
+              {bar(stats.disk_percent)}
+            </div>
+          </>
+        )}
+        <Row label="Sessions" value={system?.active_sessions != null ? String(system.active_sessions) : "--"} />
+        <Row label="Latency" value={latencyMs != null ? `${latencyMs} ms` : "--"} />
+        <Row label="Last reply" value={chatLatency != null ? `${chatLatency} ms` : "--"} />
+      </div>
+    </motion.div>
+  );
+}
+
+function PomodoroWidget({ onSend }: { onSend: (msg: string) => void }) {
+  const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  const [status, setStatus] = React.useState<{ active: boolean; label: string; elapsed_seconds: number; remaining_seconds: number; percent_done: number } | null>(null);
+  const [labelInput, setLabelInput] = React.useState("");
+
+  React.useEffect(() => {
+    const load = () => fetch(`${API}/pomodoro/status`).then((r) => r.ok ? r.json() : null).then((d) => { if (d) setStatus(d); }).catch(() => null);
+    load();
+    const iv = setInterval(load, 5000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+  const start = async () => {
+    const label = labelInput.trim() || "Focus session";
+    await fetch(`${API}/pomodoro/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label, duration_minutes: 25 }) });
+    setLabelInput("");
+    setTimeout(() => fetch(`${API}/pomodoro/status`).then((r) => r.json()).then(setStatus).catch(() => null), 300);
+  };
+
+  const stop = async () => {
+    await fetch(`${API}/pomodoro/stop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ completed: false }) });
+    setStatus(null);
+  };
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+      <p className="mb-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>⏱ Focus Timer</p>
+      {status?.active ? (
+        <>
+          <p className="text-xs text-slate-400 mb-1 truncate">{status.label}</p>
+          <div className="h-1 rounded-full bg-white/10 overflow-hidden mb-2">
+            <div className="h-full rounded-full transition-all" style={{ width: `${status.percent_done}%`, background: "var(--accent-strong)" }} />
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-200 font-mono">{fmt(status.remaining_seconds)} left</span>
+            <button onClick={() => void stop()} className="text-pink-300 hover:text-pink-100 transition">Stop</button>
+          </div>
+        </>
+      ) : (
+        <div className="flex gap-2">
+          <input value={labelInput} onChange={(e) => setLabelInput(e.target.value)} placeholder="Task label (optional)"
+            className="min-w-0 flex-1 rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-white outline-none placeholder:text-slate-500" />
+          <button onClick={() => void start()} className="rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-xs text-[var(--accent-text)] hover:bg-[var(--accent)]/20 transition">
+            25 min
+          </button>
+        </div>
+      )}
     </div>
   );
 }

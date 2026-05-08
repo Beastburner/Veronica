@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -39,13 +40,27 @@ _SOCIAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Connectivity / alive-check patterns — never need the LLM
+_ALIVE_RE = re.compile(
+    r"(?:hello[\s,?!]+){2,}"           # "hello, hello" or "hello hello hello"
+    r"|can\s+you\s+hear\s+me"
+    r"|are\s+you\s+(?:there|online|working|alive|up)"
+    r"|(?:test(?:ing)?[\s,?!]*){2,}"   # "testing testing"
+    r"|is\s+(?:this\s+)?(?:thing\s+)?(?:on|working)"
+    r"|(?:veronica|hey)\s*\?+$",
+    re.IGNORECASE,
+)
+
 _SOCIAL_REPLIES = ("Hey.", "Sup.", "Hey, what's good.", "Yo.", "Hey there.")
 _social_reply_index = 0
 
 
 def _social_intent(message: str) -> IntentResult | None:
     global _social_reply_index
-    if _SOCIAL_RE.match(message.strip()):
+    stripped = message.strip()
+    if _ALIVE_RE.search(stripped):
+        return IntentResult("social", {"message": "Online. What do you need?"})
+    if _SOCIAL_RE.match(stripped):
         reply = _SOCIAL_REPLIES[_social_reply_index % len(_SOCIAL_REPLIES)]
         _social_reply_index += 1
         return IntentResult("social", {"message": reply})
@@ -327,8 +342,40 @@ def _llm_action_intent(message: str) -> IntentResult | None:
     lowered = message.lower()
     is_email = any(kw in lowered for kw in _EMAIL_ACTION_KW)
     is_calendar = any(kw in lowered for kw in _CALENDAR_ACTION_KW)
-    if not is_email and not is_calendar:
+    is_commit = any(kw in lowered for kw in _GH_COMMIT_KW)
+    if not is_email and not is_calendar and not is_commit:
         return None
+
+    if is_commit:
+        from app.config import settings as _cfg
+        schema = (
+            'Schema: {"action": "commit_file" | "none", "repo": string, "path": string, '
+            '"content": string, "message": string, "branch": string}. '
+            f'Default owner is "{_cfg.github_username}". If repo has no owner prefix add it. '
+            'path is the file path inside the repo (e.g. "README.md", "notes/todo.txt"). '
+            'content is the full text to write into the file. '
+            'message is the git commit message. '
+            'branch defaults to "main" if not stated. '
+            'If any of repo, path, content, or message cannot be determined, return {"action": "none"}.'
+        )
+        payload = call_json(f"User message: {message!r}", schema_hint=schema, max_tokens=300)
+        if not payload or payload.get("action") == "none":
+            return None
+        repo = (payload.get("repo") or "").strip()
+        path = (payload.get("path") or "").strip()
+        content = (payload.get("content") or "").strip()
+        commit_msg = (payload.get("message") or "").strip()
+        branch = (payload.get("branch") or "main").strip()
+        if not repo or not path or not content or not commit_msg:
+            return None
+        if "/" not in repo:
+            from app.config import settings as _cfg2
+            repo = f"{_cfg2.github_username}/{repo}"
+        return IntentResult("tool", {
+            "tool": "github_commit_file",
+            "args": {"repo": repo, "path": path, "content": content, "message": commit_msg, "branch": branch},
+            "confirm_first": True,
+        })
 
     now = current_local_time()
 
@@ -349,7 +396,8 @@ def _llm_action_intent(message: str) -> IntentResult | None:
             f'Current datetime: {now.strftime("%Y-%m-%dT%H:%M:%S")} IST (Asia/Kolkata, UTC+05:30). '
             'start and end must be ISO 8601 with seconds (YYYY-MM-DDTHH:MM:SS). '
             'Default event duration is 60 minutes when not stated. '
-            'attendees is a list of email addresses or null. '
+            'attendees is a list of attendee names or emails — use the person\'s exact name if you do not know their email. '
+            'NEVER invent or guess email addresses. '
             'If time cannot be determined, return {"action": "none"}.'
         )
 
@@ -365,9 +413,17 @@ def _llm_action_intent(message: str) -> IntentResult | None:
         body = (payload.get("body") or "").strip()
         if not subject:
             return None
+        # Resolve name → email if no @ present
+        if to and "@" not in to:
+            try:
+                from app.contacts import resolve_name_to_email
+                resolved = resolve_name_to_email(to)
+                if resolved:
+                    to = resolved
+            except Exception:
+                pass
         if action == "draft_email":
             return IntentResult("tool", {"tool": "gmail_draft", "args": {"to": to, "subject": subject, "body": body}})
-        # "send_email" — check if user explicitly said "send" or used compose/write
         _EXPLICIT_SEND_KW = ("send email", "send an email", "send mail", "send a mail",
                              "email to", "mail to", "shoot an email", "shoot a mail")
         explicit_send = any(kw in lowered for kw in _EXPLICIT_SEND_KW)
@@ -387,8 +443,15 @@ def _llm_action_intent(message: str) -> IntentResult | None:
         if not title:
             return None
 
+        # Resolve attendee names → emails
+        if attendees:
+            try:
+                from app.contacts import resolve_attendees
+                attendees = resolve_attendees(attendees)
+            except Exception:
+                pass
+
         if not start or not end:
-            # Ask for the missing time instead of failing silently
             ask = f"When should I schedule '{title}'? Please provide a date and time."
             return IntentResult("read", {
                 "kind": "calendar_need_info",
@@ -466,20 +529,356 @@ def _protocol_intent(message: str) -> IntentResult | None:
 
 _MATH_PATTERN = re.compile(r"^[\s\d\.\+\-\*\/\(\)\^%]+$")
 _WEATHER_RE = re.compile(r"\bweather\s+(?:in|for|at)?\s*([A-Za-z][A-Za-z\s,\-]{1,40})", re.IGNORECASE)
-_SEARCH_RE = re.compile(r"^\s*(?:search|google|look up|web search)\s+(?:for\s+)?(.+)$", re.IGNORECASE)
+_SEARCH_RE = re.compile(r"^\s*(?:can\s+(?:you\s+)?|please\s+)?(?:search|google|look up|web\s*search|web\s*scrape|scrape)\s+(?:for\s+|about\s+)?(.+)$", re.IGNORECASE)
 _RUN_RE = re.compile(r"^\s*(?:run command|exec|shell)\s+(.+)$", re.IGNORECASE)
 _GH_ISSUES_RE = re.compile(
     r"\b(?:show|list|get)\s+(?:open\s+)?issues\s+(?:on|for|in)\s+([A-Za-z0-9_\.\-]+/[A-Za-z0-9_\.\-]+)",
     re.IGNORECASE,
 )
+_SCRAPE_RE = re.compile(
+    r"(?:web\s*scrape|scrape|fetch(?:\s+content)?(?:\s+from)?|get\s+content\s+from|extract(?:\s+text)?(?:\s+from)?|"
+    r"read(?:\s+(?:the\s+)?(?:page|article|website|webpage))?(?:\s+(?:at|from))?|"
+    r"summarize(?:\s+(?:the\s+)?(?:page|article|website))?(?:\s+(?:at|from))?)\s+"
+    r"(?:this\s+|the\s+|it\s+)?"  # allow "this/the/it" before the URL
+    r"(https?://\S+)",
+    re.IGNORECASE,
+)
+_SCRAPE_RE_POST = re.compile(
+    r"(https?://\S+)\s+(?:web\s*scrape|scrape|summarize|read|fetch)",
+    re.IGNORECASE,
+)
+# Habit patterns
+_HABIT_LOG_RE = re.compile(
+    r"(?:log|did|done|check\s*off|complete|mark(?:\s+done)?|finished?)\s+(?:habit\s+)?(.+)",
+    re.IGNORECASE,
+)
+_HABIT_STATUS_RE = re.compile(
+    r"(?:show|check|list|what(?:\'s|\s+are)?)\s+(?:my\s+)?habits?",
+    re.IGNORECASE,
+)
+_HABIT_CREATE_RE = re.compile(
+    r"(?:add|create|new|track)\s+(?:a\s+)?habit(?:\s+(?:called|named|for))?\s+(.+)",
+    re.IGNORECASE,
+)
+# News — generic digest
+_NEWS_RE = re.compile(
+    r"(?:show|get|fetch|check|give\s+me|tell\s+me|what(?:\'s|\s+is)?)\s+(?:the\s+)?(?:news|digest|headlines?|top\s+stories?|latest\s+news)",
+    re.IGNORECASE,
+)
+# Topic-specific news — "latest F1 news" / "news about Formula 1" → web_search
+_TOPIC_NEWS_RE = re.compile(
+    r"(?:latest|recent|top|current)\s+(.+?)\s+news"
+    r"|(?:news|headlines?)\s+(?:about|for|on|regarding)\s+(.+)"
+    r"|(?:check|get|show|fetch)\s+(?:the\s+)?(?:latest|recent)\s+news\s+(?:for|about|on)\s+(.+)",
+    re.IGNORECASE,
+)
+# Pomodoro
+_POMODORO_START_RE = re.compile(
+    r"(?:start|begin|set)\s+(?:a\s+)?(?:pomodoro|focus\s+(?:timer|session)|timer)(?:\s+for\s+(.+))?",
+    re.IGNORECASE,
+)
+_POMODORO_STOP_RE = re.compile(
+    r"(?:stop|end|finish|cancel)\s+(?:the\s+)?(?:pomodoro|focus\s+timer|timer)",
+    re.IGNORECASE,
+)
+_POMODORO_STATUS_RE = re.compile(
+    r"(?:timer\s+status|how\s+(?:long\s+)?(?:is\s+)?(?:left|remaining)|pomodoro\s+status)",
+    re.IGNORECASE,
+)
+# Planner
+_PLAN_RE = re.compile(
+    r"(?:plan(?:\s+for)?|break\s+(?:down|up)|decompose|help\s+me\s+(?:plan|build|create)|create\s+a\s+plan\s+for)[:\s]+(.+)",
+    re.IGNORECASE,
+)
+# Clipboard
+_CLIP_SAVE_RE = re.compile(
+    r"(?:save\s+(?:to\s+)?clipboard|clip\s+this|remember\s+this\s+snippet)[:\s]+(.+)",
+    re.IGNORECASE,
+)
+_CLIP_SEARCH_RE = re.compile(
+    r"(?:find\s+(?:in\s+)?clipboard|search\s+(?:my\s+)?(?:clips?|clipboard)|get\s+(?:from\s+)?clipboard)[:\s]+(.+)",
+    re.IGNORECASE,
+)
+# System stats
+_SYSSTAT_RE = re.compile(
+    r"(?:system\s+stats?|cpu\s+usage|ram\s+usage|disk\s+(?:usage|space)|resource\s+usage|how\s+(?:much\s+)?(?:cpu|ram|memory))",
+    re.IGNORECASE,
+)
+# GitHub PRs — accepts owner/repo OR bare repo name (resolves owner from settings)
+_GH_PRS_RE = re.compile(
+    r"\b(?:show|list|get)\s+(?:open\s+)?(?:pull\s*requests?|prs?)"
+    r"(?:\s+(?:on|for|in)\s+([A-Za-z0-9_\.\-]+(?:/[A-Za-z0-9_\.\-]+)?))?",
+    re.IGNORECASE,
+)
+_GH_COMMITS_RE = re.compile(
+    r"\b(?:show|list|get|check|fetch|latest|recent)\s+(?:the\s+)?(?:latest\s+|recent\s+)?(?:github\s+)?commits?"
+    r"(?:\s+(?:on|for|in|to)\s+([A-Za-z0-9_\.\-]+(?:/[A-Za-z0-9_\.\-]+)?))?",
+    re.IGNORECASE,
+)
+_GH_REPO_RE = re.compile(
+    r"\b(?:repo\s+stats?|stats?\s+(?:for|of|on)\s+(?:repo\s+)?)([A-Za-z0-9_\.\-]+(?:/[A-Za-z0-9_\.\-]+)?)",
+    re.IGNORECASE,
+)
+# "my github" / "my repos" / "my issues"
+_GH_MY_ISSUES_RE = re.compile(
+    r"\bmy\s+(?:github\s+)?(?:open\s+)?issues",
+    re.IGNORECASE,
+)
+_GH_MY_PRS_RE = re.compile(
+    r"\bmy\s+(?:github\s+)?(?:open\s+)?(?:pull\s*requests?|prs?)",
+    re.IGNORECASE,
+)
+_GH_MY_COMMITS_RE = re.compile(
+    r"\bmy\s+(?:recent\s+|latest\s+)?(?:github\s+)?commits?"
+    r"|\blatest\s+(?:github\s+)?commit"
+    r"|\b(?:check|show|get)\s+(?:my\s+)?(?:latest|last|recent)\s+(?:github\s+)?commits?",
+    re.IGNORECASE,
+)
+# Spotify
+_SPOTIFY_CURRENT_RE = re.compile(
+    r"what(?:['']?s| is)\s+(?:playing|the\s+(?:current|playing)\s+track|on\s+spotify)|current\s+(?:song|track)",
+    re.IGNORECASE,
+)
+_SPOTIFY_TOGGLE_RE = re.compile(
+    r"(?:play|pause|resume)\s+(?:spotify|the\s+music|music|playback)",
+    re.IGNORECASE,
+)
+_SPOTIFY_NEXT_RE = re.compile(
+    r"(?:next|skip)\s+(?:song|track|spotify)?(?:\s+on\s+spotify)?",
+    re.IGNORECASE,
+)
+_SPOTIFY_PREV_RE = re.compile(
+    r"(?:previous|prev|go\s+back)\s+(?:song|track|spotify)?",
+    re.IGNORECASE,
+)
+_SPOTIFY_VOLUME_RE = re.compile(
+    r"(?:set|change)\s+(?:spotify\s+)?(?:volume|vol)\s+(?:to\s+)?(\d{1,3})",
+    re.IGNORECASE,
+)
+_SPOTIFY_PLAY_RE = re.compile(
+    r"(?:play|put\s+on)\s+(.+?)(?:\s+(?:on|in)\s+spotify)?$",
+    re.IGNORECASE,
+)
+_SPOTIFY_PLAY_EXCLUDES = re.compile(
+    r"^(?:music|spotify|the\s+music|playback|a\s+song|some\s+music|something)$",
+    re.IGNORECASE,
+)
+# WhatsApp
+_WA_STATUS_RE = re.compile(
+    r"(?:whatsapp|wa)\s+(?:status|connected?|online|running)",
+    re.IGNORECASE,
+)
+_WA_MESSAGES_RE = re.compile(
+    r"(?:show|get|check|read)\s+(?:my\s+)?(?:whatsapp|wa)\s+(?:messages?|chats?|inbox)",
+    re.IGNORECASE,
+)
+_WA_SEND_RE = re.compile(
+    r"(?:send\s+(?:a\s+)?(?:whatsapp|wa)\s+(?:message\s+)?(?:to\s+)?|whatsapp\s+|message\s+(?:on\s+whatsapp\s+)?)"
+    r"(\+?[\d][\d\s\-]{6,14})"   # phone number
+    r"[\s:,]+(.+)",
+    re.IGNORECASE,
+)
+# Name-based WA send — "send whatsapp to Parth Soni saying hi"
+_WA_SEND_NAME_RE = re.compile(
+    r"(?:send\s+(?:a\s+)?(?:whatsapp|wa)\s+(?:message\s+)?to\s+|whatsapp\s+(?:message\s+)?to\s+)"
+    r"([A-Za-z][A-Za-z\s]{1,40}?)"
+    r"(?:\s+saying\s+|\s+that\s+|\s*:\s*|\s+with(?:\s+message)?\s*:\s*)"
+    r"(.+)",
+    re.IGNORECASE,
+)
+_WA_SEND_KW = (
+    "send whatsapp", "send a whatsapp", "whatsapp message", "send wa",
+    "message on whatsapp", "text on whatsapp", "whatsapp to",
+)
+# GitHub issue creation
+_GH_CREATE_ISSUE_RE = re.compile(
+    r"(?:create|open|raise|file|new)\s+(?:a\s+)?(?:github\s+)?issue"
+    r"(?:\s+(?:on|in|for)\s+([A-Za-z0-9_\.\-]+(?:/[A-Za-z0-9_\.\-]+)?))?"
+    r"[\s:,]+(.+)",
+    re.IGNORECASE,
+)
+_GH_COMMIT_KW = (
+    "commit to github", "commit to repo", "commit file", "push file",
+    "create file in", "update file in", "push to", "commit to",
+    "make a commit", "make commit",
+)
+# Notion
+_NOTION_SEARCH_RE = re.compile(
+    r"(?:search|find|look\s+up)\s+(?:in\s+)?notion[:\s]+(.+)",
+    re.IGNORECASE,
+)
+_NOTION_SYNC_RE = re.compile(
+    r"(?:sync|push)\s+notes?\s+to\s+notion",
+    re.IGNORECASE,
+)
+# System alerts
+_SYS_ALERTS_RE = re.compile(
+    r"(?:system\s+alerts?|resource\s+alerts?|threshold\s+alerts?|show\s+alerts?)",
+    re.IGNORECASE,
+)
+
+
+def _resolve_repo(name: str | None) -> str:
+    from app.config import settings
+    owner = settings.github_username
+    if not name:
+        return f"{owner}/{settings.github_default_repo}"
+    if "/" in name:
+        return name
+    return f"{owner}/{name}"
 
 
 def _tool_intent(message: str) -> IntentResult | None:
     stripped = message.strip().rstrip(".?!")
 
+    if _GH_MY_ISSUES_RE.search(stripped):
+        from app.config import settings
+        return IntentResult("tool", {"tool": "get_open_issues", "args": {"repo": f"{settings.github_username}/Veronica"}})
+
+    if _GH_MY_PRS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "github_list_prs", "args": {"repo": _resolve_repo(None)}})
+
+    if _GH_MY_COMMITS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "github_recent_commits", "args": {"repo": _resolve_repo(None)}})
+
+    m = _GH_PRS_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "github_list_prs", "args": {"repo": _resolve_repo(m.group(1))}})
+
+    m = _GH_COMMITS_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "github_recent_commits", "args": {"repo": _resolve_repo(m.group(1))}})
+
+    m = _GH_REPO_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "github_repo_stats", "args": {"repo": _resolve_repo(m.group(1))}})
+
+    if _SPOTIFY_CURRENT_RE.search(stripped):
+        return IntentResult("tool", {"tool": "spotify_current", "args": {}})
+
+    if _SPOTIFY_TOGGLE_RE.search(stripped):
+        return IntentResult("tool", {"tool": "spotify_toggle", "args": {}})
+
+    if _SPOTIFY_NEXT_RE.search(stripped):
+        return IntentResult("tool", {"tool": "spotify_skip_next", "args": {}})
+
+    if _SPOTIFY_PREV_RE.search(stripped):
+        return IntentResult("tool", {"tool": "spotify_skip_prev", "args": {}})
+
+    m = _SPOTIFY_VOLUME_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "spotify_volume", "args": {"volume_pct": int(m.group(1))}})
+
+    m = _SPOTIFY_PLAY_RE.search(stripped)
+    if m:
+        query = m.group(1).strip()
+        if not _SPOTIFY_PLAY_EXCLUDES.match(query):
+            return IntentResult("tool", {"tool": "spotify_play", "args": {"query": query}})
+
+    if _WA_STATUS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "whatsapp_status", "args": {}})
+
+    if _WA_MESSAGES_RE.search(stripped):
+        return IntentResult("tool", {"tool": "whatsapp_messages", "args": {}})
+
+    m = _WA_SEND_RE.search(stripped)
+    if m:
+        number = re.sub(r"[\s\-]", "", m.group(1))
+        text = m.group(2).strip()
+        return IntentResult("tool", {
+            "tool": "whatsapp_send",
+            "args": {"to": number, "text": text},
+            "confirm_first": True,
+        })
+
+    m = _WA_SEND_NAME_RE.search(stripped)
+    if m:
+        name = m.group(1).strip()
+        text = m.group(2).strip()
+        return IntentResult("tool", {
+            "tool": "whatsapp_send",
+            "args": {"to": name, "text": text},
+            "confirm_first": True,
+        })
+
+    m = _GH_CREATE_ISSUE_RE.search(stripped)
+    if m:
+        repo = _resolve_repo(m.group(1))
+        title = m.group(2).strip()
+        return IntentResult("tool", {
+            "tool": "create_issue",
+            "args": {"repo": repo, "title": title},
+            "confirm_first": True,
+        })
+
+    m = _NOTION_SEARCH_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "notion_search", "args": {"query": m.group(1).strip()}})
+
+    if _NOTION_SYNC_RE.search(stripped):
+        return IntentResult("tool", {"tool": "notion_sync_push", "args": {"database_id": os.getenv("NOTION_DATABASE_ID", "")}})
+
+    if _SYS_ALERTS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "system_alerts", "args": {}})
+
     gh = _GH_ISSUES_RE.search(stripped)
     if gh:
         return IntentResult("tool", {"tool": "get_open_issues", "args": {"repo": gh.group(1).strip()}})
+
+    scrape = _SCRAPE_RE.search(stripped)
+    if scrape:
+        return IntentResult("tool", {"tool": "web_scrape", "args": {"url": scrape.group(1).strip()}})
+    
+    scrape_post = _SCRAPE_RE_POST.search(stripped)
+    if scrape_post:
+        return IntentResult("tool", {"tool": "web_scrape", "args": {"url": scrape_post.group(1).strip()}})
+
+    # Habits
+    if _HABIT_STATUS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "habit_status", "args": {}})
+    m = _HABIT_CREATE_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "habit_create", "args": {"name": m.group(1).strip()}})
+    m = _HABIT_LOG_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "habit_log", "args": {"name": m.group(1).strip()}})
+
+    # Topic-specific news → web_search for live results
+    m = _TOPIC_NEWS_RE.search(stripped)
+    if m:
+        topic = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+        return IntentResult("tool", {"tool": "web_search", "args": {"query": f"latest {topic} news"}})
+
+    # Generic news digest (HN, Verge, etc.)
+    if _NEWS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "news_digest", "args": {}})
+
+    # Pomodoro
+    if _POMODORO_STATUS_RE.search(stripped):
+        return IntentResult("tool", {"tool": "pomodoro_status", "args": {}})
+    if _POMODORO_STOP_RE.search(stripped):
+        return IntentResult("tool", {"tool": "pomodoro_stop", "args": {}})
+    m = _POMODORO_START_RE.search(stripped)
+    if m:
+        label = (m.group(1) or "Focus session").strip()
+        return IntentResult("tool", {"tool": "pomodoro_start", "args": {"label": label}})
+
+    # Planner
+    m = _PLAN_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "plan_goal", "args": {"goal": m.group(1).strip(), "auto_create": False}})
+
+    # Clipboard
+    m = _CLIP_SAVE_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "clipboard_save", "args": {"content": m.group(1).strip()}})
+    m = _CLIP_SEARCH_RE.search(stripped)
+    if m:
+        return IntentResult("tool", {"tool": "clipboard_search", "args": {"query": m.group(1).strip()}})
+
+    # System stats
+    if _SYSSTAT_RE.search(stripped):
+        return IntentResult("tool", {"tool": "system_stats", "args": {}})
 
     weather = _WEATHER_RE.search(stripped)
     if weather:

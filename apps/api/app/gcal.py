@@ -54,12 +54,14 @@ async def list_events(days_ahead: int = 7) -> dict[str, Any]:
     try:
         tz = ZoneInfo(APP_TZ)
         now = datetime.now(tz)
+        # Start from beginning of today so earlier events are visible
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = now + timedelta(days=days_ahead)
         result = (
             service.events()
             .list(
                 calendarId="primary",
-                timeMin=now.isoformat(),
+                timeMin=today_start.isoformat(),
                 timeMax=end.isoformat(),
                 singleEvents=True,
                 orderBy="startTime",
@@ -84,6 +86,15 @@ async def list_events(days_ahead: int = 7) -> dict[str, Any]:
                     "all_day": "date" in start,
                 }
             )
+        try:
+            from app.contacts import ingest_calendar_attendees
+            for evt in events:
+                if evt.get("attendees"):
+                    ingest_calendar_attendees(
+                        [{"email": e, "displayName": ""} for e in evt["attendees"]]
+                    )
+        except Exception:
+            pass
         return {"tool": "list_events", "ok": True, "result": events}
     except Exception as exc:
         return {"tool": "list_events", "ok": False, "error": str(exc)}
@@ -105,6 +116,21 @@ async def create_event(
     try:
         start_datetime = _normalize_dt(start_datetime)
         end_datetime = _normalize_dt(end_datetime)
+        # Guard: if end <= start, default to 1-hour event
+        _past_warning = ""
+        try:
+            from datetime import datetime as _dt
+            _tz = ZoneInfo(APP_TZ)
+            _now = _dt.now(_tz)
+            _s = _dt.fromisoformat(start_datetime.replace("Z", "+00:00"))
+            _e = _dt.fromisoformat(end_datetime.replace("Z", "+00:00"))
+            if _e <= _s:
+                end_datetime = (_s + timedelta(hours=1)).isoformat()
+                _e = _dt.fromisoformat(end_datetime.replace("Z", "+00:00"))
+            if _s < _now:
+                _past_warning = " (Note: this event is in the past)"
+        except Exception:
+            pass
         body: dict[str, Any] = {
             "summary": title,
             "description": description,
@@ -144,9 +170,16 @@ async def create_event(
             else:
                 raise
 
+        try:
+            from app.contacts import ingest_calendar_attendees
+            if attendees:
+                ingest_calendar_attendees([{"email": a, "displayName": ""} for a in attendees])
+        except Exception:
+            pass
         return {
             "tool": "create_event",
             "ok": True,
+            "past_warning": _past_warning,
             "result": {
                 "id": result.get("id"),
                 "title": title,

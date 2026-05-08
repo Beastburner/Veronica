@@ -1,0 +1,13 @@
+{
+  "name": "veronica-whatsapp",
+  "version": "1.0.0",
+  "description": "WhatsApp Web service for VERONICA",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "express": "^4.18.3",
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
