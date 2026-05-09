@@ -185,15 +185,35 @@ def backend_status() -> dict[str, Any]:
     }
 
 
+_embed_offline_until: float = 0.0
+_EMBED_RETRY_AFTER = 60.0  # seconds before retrying after a connection failure
+
+
 def get_embedding(text: str) -> list[float] | None:
-    """Embed text using the dedicated embed model, falling back to the chat model."""
+    """Embed text using the dedicated embed model, falling back to the chat model.
+
+    Uses a 60-second circuit breaker: if Ollama is unreachable, skip retries
+    until the cooldown expires so we don't spam connection errors on every save.
+    """
+    global _embed_offline_until
+    import time as _time
+
+    now = _time.monotonic()
+    if now < _embed_offline_until:
+        return None
+
     client, _ = _ollama()
-    # Try the dedicated embed model first (nomic-embed-text or configured override)
     for model in (settings.ollama_embed_model, settings.ollama_model):
         try:
             resp = client.embeddings.create(input=[text], model=model)
+            _embed_offline_until = 0.0  # reset on success
             return resp.data[0].embedding
+        except APIConnectionError:
+            log.debug("Ollama unreachable for embeddings — backing off %ds", int(_EMBED_RETRY_AFTER))
+            _embed_offline_until = now + _EMBED_RETRY_AFTER
+            return None
         except Exception as e:
             log.debug("Embedding with model %s failed: %s — trying next", model, e)
-    log.warning("All embedding attempts failed for text: %s…", text[:60])
+
+    log.debug("All embedding attempts failed for text: %s…", text[:60])
     return None

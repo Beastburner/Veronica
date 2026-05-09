@@ -56,6 +56,11 @@ function invalidateGroupsCache() {
   _groupsCacheAt = 0;
 }
 
+// Strip emoji characters for name comparison (keeps original name for display)
+function stripEmoji(str) {
+  return (str || "").replace(/\p{Emoji}/gu, "").replace(/\s+/g, " ").trim();
+}
+
 // ── Auto-detect system Chrome/Brave/Edge ─────────────────────────────────
 const fs = require("fs");
 const os = require("os");
@@ -100,13 +105,12 @@ const PUPPETEER_ARGS = [
   "--disable-dev-shm-usage",
   "--disable-accelerated-2d-canvas",
   "--no-first-run",
-  // Note: --no-zygote removed — conflicts with some Chromium/Brave builds
   "--disable-gpu",
   "--disable-extensions",
   "--disable-background-networking",
   "--disable-sync",
   "--disable-translate",
-  "--disable-features=site-per-process,VizDisplayCompositor",
+  "--disable-features=site-per-process,VizDisplayCompositor,TranslateUI,BlinkGenPropertyTrees",
   "--metrics-recording-only",
   "--safebrowsing-disable-auto-update",
   "--disable-default-apps",
@@ -114,12 +118,23 @@ const PUPPETEER_ARGS = [
   "--hide-scrollbars",
   "--password-store=basic",
   "--use-mock-keychain",
-  // Memory-saving flags for RAM-constrained systems
-  "--js-flags=--max-old-space-size=256",
+  // Memory-saving flags
+  "--js-flags=--max-old-space-size=192",
   "--disk-cache-size=1",
   "--media-cache-size=1",
-  "--renderer-process-limit=2",
+  "--renderer-process-limit=1",
   "--disable-dev-tools",
+  "--disable-hang-monitor",
+  "--disable-prompt-on-repost",
+  "--disable-domain-reliability",
+  "--disable-component-update",
+  "--disable-breakpad",
+  "--disable-client-side-phishing-detection",
+  "--disable-popup-blocking",
+  "--no-pings",
+  "--disable-renderer-backgrounding",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-ipc-flooding-protection",
 ];
 
 const client = new Client({
@@ -238,13 +253,13 @@ client.on("message_create", (msg) => {
   });
 });
 
-// ── Startup watchdog — warn if browser hasn't shown QR or ready in 90s ──
+// ── Startup watchdog — warn if browser hasn't shown QR or ready in 3 min ──
 const _startupWatchdog = setTimeout(() => {
   if (!isReady && !currentQR) {
-    console.warn("[VERONICA] ⚠️  90s elapsed — browser may be stuck (likely low RAM)");
+    console.warn("[VERONICA] ⚠️  3 min elapsed — browser may be stuck (likely low RAM)");
     console.warn("[VERONICA] Tips: close other apps to free RAM, or call POST /reset to restart");
   }
-}, 90_000);
+}, 180_000);
 
 client.initialize().catch((err) => {
   clearTimeout(_startupWatchdog);
@@ -287,9 +302,9 @@ app.get("/contacts", async (req, res) => {
         const name = (c.name || c.pushname || "").trim();
         if (!name) return false;
         if (!words.length) return true;
-        const nameLower = name.toLowerCase();
+        const nameLower = stripEmoji(name).toLowerCase();
         const num = (c.number || "");
-        // Match if ALL query words appear somewhere in the name, OR number contains query
+        // Match if ALL query words appear somewhere in the name (emoji-stripped), OR number contains query
         return words.every(w => nameLower.includes(w)) || num.includes(raw);
       })
       .map((c) => {
@@ -331,11 +346,11 @@ app.post("/send", async (req, res) => {
       const digits = to.replace(/[\s\-\(\)]/g, "").replace(/^\+/, "");
       chatId = `${digits}@c.us`;
     } else {
-      const lower = to.toLowerCase().trim();
-      // 1. Try contacts first
+      const lower = stripEmoji(to).toLowerCase().trim();
+      // 1. Try contacts first (compare after stripping emoji from both sides)
       const contacts = await getCachedContacts();
       const match = contacts.find((c) => {
-        const name = (c.name || c.pushname || "").toLowerCase();
+        const name = stripEmoji(c.name || c.pushname || "").toLowerCase();
         return name === lower || name.startsWith(lower) || lower.startsWith(name.split(" ")[0]);
       });
       if (match) {
@@ -367,20 +382,62 @@ app.post("/send", async (req, res) => {
   }
 });
 
-app.get("/conversation", (req, res) => {
+app.get("/conversation", async (req, res) => {
   const q = (req.query.q || "").toLowerCase().trim();
   if (!q) return res.json({ messages: messages.slice(0, 20) });
   const words = q.split(/\s+/).filter(Boolean);
   const matches = (m) => {
     const fields = [m.from, m.fromName, m.to, m.toName].map(f => (f || "").toLowerCase());
     const all = fields.join(" ");
-    // Full phrase match first
     if (all.includes(q)) return true;
-    // Fall back: any single word from the query matches a name field
     return words.some(w => fields[1].includes(w) || fields[3].includes(w));
   };
-  const filtered = messages.filter(matches);
-  res.json({ messages: filtered.slice(0, 30), contact: q });
+  const buffered = messages.filter(matches);
+
+  // Buffer hit — return immediately
+  if (buffered.length > 0) {
+    return res.json({ messages: buffered.slice(0, 30), contact: q });
+  }
+
+  // Buffer miss — live fetch from WhatsApp chats
+  if (!isReady) return res.json({ messages: [], contact: q });
+  try {
+    const chats = await client.getChats();
+    // Find the best matching chat by name
+    const scored = chats
+      .filter(c => !c.isGroup)
+      .map(c => {
+        const name = stripEmoji(c.name || "").toLowerCase();
+        const score = words.filter(w => name.includes(w)).length;
+        return { chat: c, score };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    if (!scored.length) return res.json({ messages: [], contact: q });
+
+    const best = scored[0].chat;
+    const fetched = await best.fetchMessages({ limit: 20 });
+    const mapped = fetched.map(msg => ({
+      id: msg.id.id,
+      from: msg.fromMe ? "me" : (msg.from || "unknown"),
+      fromName: msg.fromMe ? "Me" : (msg._data?.notifyName || best.name || msg.from || "Unknown"),
+      to: msg.fromMe ? (msg.to || best.id._serialized) : null,
+      toName: msg.fromMe ? best.name : null,
+      body: msg.body,
+      timestamp: msg.timestamp,
+      isGroup: false,
+      fromMe: msg.fromMe,
+    })).filter(m => m.body);
+
+    // Push into buffer for future queries
+    mapped.forEach(m => pushMessage(m));
+
+    return res.json({ messages: mapped.slice(0, 30), contact: q, source: "live" });
+  } catch (err) {
+    console.error("[VERONICA] Live conversation fetch failed:", err.message);
+    return res.json({ messages: [], contact: q });
+  }
 });
 
 app.get("/groups", async (req, res) => {

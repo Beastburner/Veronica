@@ -1,11 +1,34 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import httpx
 
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"
+    "\U0001F300-\U0001F5FF"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FA6F"
+    "\U0001FA70-\U0001FAFF"
+    "\U00002702-\U000027B0"
+    "\U00002300-\U000023FF"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emoji(s: str) -> str:
+    return _EMOJI_RE.sub("", s).strip()
+
 HTTP_TIMEOUT = 6.0
+HTTP_TIMEOUT_CONVERSATION = 20.0  # live WhatsApp fetch (getChats + fetchMessages) can take 10-15s
 
 
 def _wa_base() -> str:
@@ -58,7 +81,7 @@ async def wa_contacts(query: str = "") -> dict[str, Any]:
 
 def _score_contact(contact_name: str, query_words: list[str]) -> int:
     """Score a contact name against query words (case-insensitive word overlap)."""
-    cn = contact_name.lower()
+    cn = _strip_emoji(contact_name).lower()
     cn_words = cn.split()
     score = 0
     for qw in query_words:
@@ -76,7 +99,7 @@ async def wa_search_contact(name: str) -> dict[str, Any]:
     Search WhatsApp contacts by name with fuzzy word-level matching.
     Tries: full name → first word → each word → best scored result.
     """
-    query_words = [w for w in name.lower().split() if len(w) > 1]
+    query_words = [w for w in _strip_emoji(name).lower().split() if len(w) > 1]
 
     # Collect candidates via progressively looser queries
     candidates: list[dict[str, Any]] = []
@@ -149,7 +172,7 @@ async def wa_groups(query: str = "") -> dict[str, Any]:
 async def wa_conversation(contact: str) -> dict[str, Any]:
     """Fetch messages to/from a specific contact (by name or number fragment)."""
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_CONVERSATION) as client:
             r = await client.get(f"{_wa_base()}/conversation", params={"q": contact})
             data = r.json()
             data.setdefault("ok", True)

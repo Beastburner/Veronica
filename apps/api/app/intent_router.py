@@ -144,12 +144,9 @@ def _read_intent(message: str) -> IntentResult | None:
         topic = m.group(1).strip().rstrip("?.!")
         from app.storage import semantic_search
         results = semantic_search(topic, limit=6)
-        if results:
-            lines = [f"- [{r['source']}] {r['content']}" for r in results]
-            text = f"Here's what I found about \"{topic}\":\n\n" + "\n".join(lines)
-        else:
-            text = f"I don't have anything stored about \"{topic}\", sir."
-        return IntentResult("read", {"kind": "semantic_search", "message": text})
+        # Pass results to LLM as context so it can synthesize + fact-check
+        # rather than returning raw notes as ground truth
+        return IntentResult("llm", {"search_topic": topic, "search_results": results})
 
     _JOURNAL_PHRASES = (
         "how was my day", "write my journal", "write a journal", "daily journal",
@@ -211,6 +208,7 @@ _NOTE_PREFIXES = (
     "save note ",
     "save a note ",
     "take note ",
+    "take a note ",
     "remember that ",
     "note: ",
     "add note: ",
@@ -218,12 +216,33 @@ _NOTE_PREFIXES = (
     "jot down ",
     "write down ",
     "note that ",
+    "note - ",
+    "keep note: ",
+    "quick note: ",
 )
 _MEMORY_PREFIXES = (
     "remember this: ",
+    "remember this - ",
     "commit to memory: ",
     "memorize: ",
     "memorize this: ",
+    "keep in mind: ",
+    "keep in mind that ",
+    "you should know: ",
+    "you should know that ",
+    "i want you to know: ",
+    "i want you to know that ",
+    "just so you know: ",
+    "just so you know, ",
+    "store this: ",
+    "store this fact: ",
+    "log this: ",
+    "log this fact: ",
+    "always remember: ",
+    "always remember that ",
+    "permanent memory: ",
+    "save to memory: ",
+    "save to memory that ",
 )
 
 
@@ -264,6 +283,9 @@ _WRITE_HINT_WORDS = (
     "remind", "reminder", "task", "to-do", "todo", "note", "remember",
     "memorize", "schedule", "log", "save", "store",
     "i need to", "i have to", "i must", "i should", "don't forget", "do not forget",
+    "keep in mind", "you should know", "i want you to know", "just so you know",
+    "permanent memory", "always remember", "commit this", "save this",
+    "note down", "jot this", "write this down",
 )
 
 
@@ -443,9 +465,10 @@ def _llm_action_intent(message: str) -> IntentResult | None:
             '7. Apply any specified tone (sarcastic, funny, serious, formal, aggressive, chill) to the message. '
             '8. If the user quotes what the RECIPIENT said (e.g. "on his reply [...]", "he said [...]", "replying to [...]"), '
             '   that quoted text is CONTEXT — compose a witty/appropriate reply TO it, never forward it verbatim. '
-            '9. If there is ZERO content — no topic, no subject, just "send a message" with nothing to say — '
+            '9. If only a recipient is given with NO message content, topic, instruction, or anything to write about, '
             'return {"action": "none", "to": "", "text": ""}. '
-            'If there IS a named topic (even vague, like "about Veronica" or "about the project"), write something about it. '
+            'NEVER invent or guess message content — only write if the user gave you something to say. '
+            'If the user gave a topic (e.g. "about the party", "about the project"), write about that topic. '
             'If no recipient can be determined, return {"action": "none", "to": "", "text": ""}.'
         )
         payload = call_json(f"User message: {message!r}", schema_hint=schema, max_tokens=200)
@@ -781,10 +804,11 @@ _WA_CHECK_REPLY_RE = re.compile(
     r"|did\s+(?P<n2>[A-Za-z][A-Za-z\s]{1,30}?)\s+(?:reply|respond|message|text)"
     r"|any\s+(?:reply|message|text)\s+(?:from|by)\s+(?P<n3>[A-Za-z][A-Za-z\s]{1,30})"
     r"|(?:check|show)\s+(?P<n4>[A-Za-z][A-Za-z\s]{1,30}?)(?:'s)?\s+(?:reply|message|text|response)"
-    r"|reply\s+to\s+(?P<n5>[A-Za-z][A-Za-z\s]{1,30}?)\s+on\s+(?:his|her|their)\s+(?:reply|message|text|response)"
+    r"|reply\s+(?:to\s+)?(?P<n5>[A-Za-z][A-Za-z\s]{1,30}?)\s+on\s+(?:his|her|their)\s+(?:reply|message|text|response)"
     r"|what\s+did\s+(?:he|she|they)\s+(?:reply|say|text|respond)"
     r"|did\s+(?:he|she|they)\s+(?:reply|respond|text|message)"
     r"|any\s+(?:reply|message|text|response)\s+(?:from\s+)?(?:him|her|them)"
+    r"|reply\s+(?:to\s+)?(?P<n6>[A-Za-z][A-Za-z\s]{1,30}?)(?:'s)?\s+(?:reply|message|text|response)"
     r")",
     re.IGNORECASE,
 )
@@ -902,7 +926,7 @@ def _tool_intent(message: str) -> IntentResult | None:
     # Check reply / conversation — named contact or pronoun (pronoun → __last__)
     m = _WA_CHECK_REPLY_RE.search(stripped)
     if m:
-        raw = (m.group("n1") or m.group("n2") or m.group("n3") or m.group("n4") or m.group("n5") or "").strip()
+        raw = (m.group("n1") or m.group("n2") or m.group("n3") or m.group("n4") or m.group("n5") or m.group("n6") or "").strip()
         contact = "__last__" if (not raw or raw.lower() in _PRONOUNS) else raw
         # reply_context=True → show conversation AND ask what to say back
         return IntentResult("tool", {"tool": "whatsapp_conversation", "args": {"contact": contact, "reply_context": True}})

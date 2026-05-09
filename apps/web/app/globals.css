@@ -201,3 +201,90 @@ textarea {
   animation: h-scan 8s linear infinite;
   z-index: 0;
 }
+
+/* ── Responsive chat scroll ───────────────────────────── */
+.chat-scroll {
+  height: 260px;
+}
+
+@media (min-width: 640px) {
+  .chat-scroll {
+    height: 300px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .chat-scroll {
+    height: 330px;
+  }
+}
+
+/* ── Mobile drawer: prevent body scroll when open ─────── */
+body.drawer-open {
+  overflow: hidden;
+}
+
+/* ── Responsive app layout (Flexbox) ─────────────────────── */
+.app-grid {
+  display: block;   /* mobile: stacked single column */
+  width: 100%;
+}
+
+/* Mobile: sidebars hidden */
+.panel-left,
+.panel-right {
+  display: none;
+}
+
+.mobile-topbar {
+  display: flex;
+}
+
+/* Center column always takes full width on mobile */
+.app-grid-center {
+  min-width: 0;
+  width: 100%;
+}
+
+/* Desktop (≥1024px): side-by-side flex row */
+@media (min-width: 1024px) {
+  .app-grid {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .panel-left {
+    display: block;
+    flex: 0 0 240px;
+    width: 240px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .app-grid-center {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .panel-right {
+    display: block;
+    flex: 0 0 240px;
+    width: 240px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .mobile-topbar {
+    display: none;
+  }
+}
+
+@media (min-width: 1280px) {
+  .panel-left,
+  .panel-right {
+    flex: 0 0 270px;
+    width: 270px;
+  }
+}

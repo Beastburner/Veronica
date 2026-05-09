@@ -90,7 +90,8 @@ def generate_journal_entry(date_str: str | None = None) -> dict[str, Any]:
                 mins = sum(p["duration_minutes"] for p in done)
                 parts.append(f"Focus work: {len(done)} Pomodoro session(s), {mins} min total")
         if data["notes"]:
-            parts.append(f"{len(data['notes'])} note(s) created")
+            note_contents = "; ".join(n["content"] for n in data["notes"][:5])
+            parts.append(f"Notes saved: {note_contents}")
         if data["life_log"]:
             events = [e["title"] for e in data["life_log"][:6]]
             parts.append("Activity: " + ", ".join(events))
@@ -102,21 +103,22 @@ def generate_journal_entry(date_str: str | None = None) -> dict[str, Any]:
                 {
                     "role": "system",
                     "content": (
-                        f"You are writing a short personal journal entry for {sender}. "
-                        "Write in first person, casual and reflective tone. "
-                        "2-4 sentences. Mention what got done, any standout moments, how the day felt overall. "
-                        "No headers, no bullet points — just flowing prose."
+                        f"You are VERONICA writing a daily activity log for {sender}. "
+                        "Style: sharp, factual, dry. No emotional padding. No 'how it felt'. "
+                        "Report what actually happened — tasks, notes, focus sessions, habits. "
+                        "2-4 sentences max. First person. No headers, no bullets. "
+                        "If activity was light, say so directly. Never invent or pad with vague reflections."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Date: {d}\n\nToday's activity:\n{context}\n\nWrite the journal entry.",
+                    "content": f"Date: {d}\n\nToday's activity:\n{context}\n\nWrite the log entry.",
                 },
             ],
-            temperature=0.78,
+            temperature=0.5,
             max_tokens=160,
         )
-        summary = (text or "A productive day worth remembering.").strip()
+        summary = (text or "Light day — minimal activity recorded.").strip()
 
     from app.life_log import log_entry
     entry = log_entry("daily_journal", f"Journal — {d}", summary, {"date": d})

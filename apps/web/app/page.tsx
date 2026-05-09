@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Activity, AlertTriangle, Bell, BrainCircuit, Code2, Shield, TerminalSquare } from "lucide-react";
+import { Activity, AlertTriangle, Bell, BrainCircuit, Code2, LayoutDashboard, Shield, TerminalSquare, X } from "lucide-react";
 import React, { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { ArcCore } from "@/components/ArcCore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -300,110 +300,117 @@ export default function Home() {
   const noKeySet      = modelOffline && telemetry.model != null && !telemetry.model.provider_key_present;
   const allRateLimited = modelOffline && telemetry.model != null && telemetry.model.provider_key_present;
 
+  const [showLeft, setShowLeft] = useState(false);
+  const [showRight, setShowRight] = useState(false);
+
   return (
     <main
       data-mode={modeKey}
-      className="relative min-h-screen overflow-hidden px-4 py-4 text-slate-100 sm:px-6 lg:px-8"
+      className="relative min-h-screen overflow-x-hidden px-3 py-3 text-slate-100 sm:px-4 sm:py-4"
     >
       <div className="scanlines absolute inset-0 opacity-25" />
 
       {/* Status banners */}
       {apiOffline && (
-        <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-center gap-2 rounded-lg border border-red-500/50 bg-red-900/40 px-4 py-2 text-sm text-red-200">
+        <div className="relative z-20 mx-auto mb-3 max-w-7xl flex flex-wrap items-center gap-2 rounded-lg border border-red-500/50 bg-red-900/40 px-3 py-2 text-xs text-red-200 sm:text-sm sm:px-4">
           <AlertTriangle size={14} className="shrink-0" />
-          API OFFLINE — start the FastAPI backend: <code className="ml-1 font-mono text-xs">uvicorn app.main:app --reload</code>
+          API OFFLINE — <code className="font-mono text-xs">uvicorn app.main:app --reload</code>
         </div>
       )}
       {noKeySet && (
-        <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-900/30 px-4 py-2 text-sm text-amber-200">
+        <div className="relative z-20 mx-auto mb-3 max-w-7xl flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-900/30 px-3 py-2 text-xs text-amber-200 sm:text-sm sm:px-4">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-          <span>
-            Ollama not reachable. Make sure Ollama is running:&nbsp;
-            <code className="font-mono text-xs text-amber-100">ollama serve</code>
-            &nbsp;— then pull your model:&nbsp;
-            <code className="font-mono text-xs text-amber-100">ollama pull qwen2.5:7b</code>
-          </span>
+          <span>Ollama not reachable — run <code className="font-mono text-xs text-amber-100">ollama serve</code> then <code className="font-mono text-xs text-amber-100">ollama pull qwen2.5:7b</code></span>
         </div>
       )}
       {allRateLimited && (
-        <div className="relative z-20 mx-auto mb-4 max-w-7xl flex items-center gap-2 rounded-lg border border-orange-500/40 bg-orange-900/30 px-4 py-2 text-sm text-orange-200">
+        <div className="relative z-20 mx-auto mb-3 max-w-7xl flex items-center gap-2 rounded-lg border border-orange-500/40 bg-orange-900/30 px-3 py-2 text-xs text-orange-200 sm:text-sm sm:px-4">
           <AlertTriangle size={14} className="shrink-0" />
-          Ollama is unreachable or the model is not loaded. Check that <code className="font-mono text-xs ml-1">ollama serve</code> is running.
+          Ollama unreachable — check <code className="font-mono text-xs ml-1">ollama serve</code>
         </div>
       )}
 
-      <div className="relative z-10 mx-auto grid max-w-7xl gap-4 lg:grid-cols-[300px_1fr_320px]">
+      {/* Mobile top bar */}
+      <div className="mobile-topbar relative z-20 mb-3 items-center justify-between">
+        <button
+          onClick={() => { setShowLeft(true); setShowRight(false); }}
+          className="flex items-center gap-2 rounded-lg border border-[var(--accent)]/30 bg-black/40 px-3 py-2 text-xs text-[var(--accent-text)] backdrop-blur"
+        >
+          <BrainCircuit size={14} /> Command OS
+        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold tracking-widest" style={{ color: "var(--accent-text)" }}>{mode}</span>
+        </div>
+        <button
+          onClick={() => { setShowRight(true); setShowLeft(false); }}
+          className="flex items-center gap-2 rounded-lg border border-[var(--accent)]/30 bg-black/40 px-3 py-2 text-xs text-[var(--accent-text)] backdrop-blur"
+        >
+          <LayoutDashboard size={14} /> Tools
+        </button>
+      </div>
 
-        {/* ── LEFT PANEL ────────────────────────────────── */}
+      {/* Mobile left panel drawer */}
+      {showLeft && (
+        <div className="fixed inset-0 z-50 flex lg:hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowLeft(false)} />
+          <motion.div
+            initial={{ x: -320 }} animate={{ x: 0 }} transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            className="relative z-10 h-full w-[300px] max-w-[85vw] overflow-y-auto bg-[#04060a] border-r border-[var(--accent)]/20 p-4"
+          >
+            <button onClick={() => setShowLeft(false)} className="absolute right-3 top-3 rounded-lg border border-white/10 p-1.5 text-slate-400 hover:text-white">
+              <X size={14} />
+            </button>
+            <LeftPanelContent mode={mode} setMode={setMode} apiOffline={apiOffline} telemetry={telemetry} chatLatency={chatLatency} mounted={mounted} />
+          </motion.div>
+        </div>
+      )}
+
+      {/* Mobile right panel drawer */}
+      {showRight && (
+        <div className="fixed inset-0 z-50 flex justify-end lg:hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowRight(false)} />
+          <motion.div
+            initial={{ x: 320 }} animate={{ x: 0 }} transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            className="relative z-10 h-full w-[300px] max-w-[85vw] overflow-y-auto bg-[#04060a] border-l border-[var(--accent)]/20 p-4"
+          >
+            <button onClick={() => setShowRight(false)} className="absolute left-3 top-3 rounded-lg border border-white/10 p-1.5 text-slate-400 hover:text-white">
+              <X size={14} />
+            </button>
+            <RightPanelContent
+              starterTasks={starterTasks}
+              notifications={notifications}
+              busy={busy}
+              sendMessage={sendMessage}
+              mounted={mounted}
+            />
+          </motion.div>
+        </div>
+      )}
+
+      <div className="app-grid relative z-10 mx-auto max-w-7xl">
+
+        {/* ── LEFT PANEL — desktop only ──────────────── */}
         <motion.aside
           {...(mounted ? fade(0) : {})}
-          className="hud-panel rounded-lg p-4"
+          className="panel-left hud-panel rounded-lg p-4"
         >
-          <div className="flex items-center gap-3 border-b border-[var(--accent)]/20 pb-4">
-            <BrainCircuit style={{ color: "var(--accent-strong)" }} />
-            <div>
-              <p className="text-xs uppercase tracking-[0.28em]" style={{ color: "var(--accent-text)" }}>
-                VERONICA
-              </p>
-              <h1 className="text-xl font-semibold">Command OS</h1>
-            </div>
-          </div>
-
-          <div className="mt-5 space-y-2">
-            {modes.map((item) => {
-              const active = mode === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setMode(item.id)}
-                  aria-pressed={active}
-                  className={`w-full rounded-lg border p-3 text-left transition ${
-                    active
-                      ? "border-[var(--accent-strong)] bg-[var(--accent)]/12 text-white shadow-hud"
-                      : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-[var(--accent)]/50"
-                  }`}
-                >
-                  <span className="block text-sm font-semibold">{item.label}</span>
-                  <span className="text-xs text-slate-400">{item.detail}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Step 2 -- SENTINEL threat badge */}
-          {mode === "SENTINEL" && (
-            <div
-              className="mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
-              style={{
-                color: "var(--accent-strong)",
-                borderColor: "var(--accent-border)",
-                background: "var(--accent-glow)",
-              }}
-            >
-              <span className="animate-pulse">&#9679;</span>
-              <span className="uppercase tracking-widest">THREAT LEVEL: MONITORING</span>
-            </div>
-          )}
-
-          {/* Telemetry -- Step 1 real data */}
-          <SystemMonitor apiOffline={apiOffline} model={telemetry.model} system={telemetry.system} latencyMs={telemetry.latencyMs} chatLatency={chatLatency} mounted={mounted} />
+          <LeftPanelContent mode={mode} setMode={setMode} apiOffline={apiOffline} telemetry={telemetry} chatLatency={chatLatency} mounted={mounted} />
         </motion.aside>
 
-        {/* ── CENTER ────────────────────────────────────── */}
-        <section className="grid gap-4">
-          {/* Step 5 inner stagger: center col starts at 150 */}
+        {/* ── CENTER ────────────────────────────────── */}
+        <section className="app-grid-center grid gap-4">
           <motion.div
             {...(mounted ? fade(150) : {})}
-            className="hud-panel rounded-lg p-4"
+            className="hud-panel rounded-lg p-3 sm:p-4"
           >
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.28em]" style={{ color: "var(--accent-text)" }}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs uppercase tracking-[0.2em]" style={{ color: "var(--accent-text)" }}>
                   Active Mode: {mode}
                 </p>
-                <h2 className="mt-1 text-2xl font-semibold sm:text-3xl">Arc command interface</h2>
+                <h2 className="mt-1 text-xl font-semibold sm:text-2xl lg:text-3xl truncate">Arc command interface</h2>
               </div>
-              <div className="rounded-lg border border-[var(--accent)]/30 bg-black/30 px-3 py-2 text-sm">
+              <div className="rounded-lg border border-[var(--accent)]/30 bg-black/30 px-2 py-1.5 text-sm sm:px-3 sm:py-2">
                 <VoiceInterface
                   onCommand={(text) => void sendMessage(text)}
                   speak={latestAssistantReply}
@@ -412,33 +419,31 @@ export default function Home() {
                 />
               </div>
             </div>
-            {/* Step 3 -- pass isThinking + isListening */}
             <ErrorBoundary name="ArcCore">
               <ArcCore mode={mode} isThinking={busy} isListening={isRecording} />
             </ErrorBoundary>
-            <p className="mx-auto max-w-2xl text-center text-sm text-slate-300">{activeBriefing}</p>
+            <p className="mx-auto max-w-2xl text-center text-xs text-slate-300 sm:text-sm">{activeBriefing}</p>
           </motion.div>
 
-          {/* Step 5 inner: second panel at 150+60=210 */}
           <motion.div
             {...(mounted ? fade(210) : {})}
-            className="hud-panel rounded-lg p-4"
+            className="hud-panel rounded-lg p-3 sm:p-4"
           >
             <div className="mb-3 flex items-center justify-between">
               <p className="flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
                 <TerminalSquare size={16} /> Conversational AI
               </p>
-              <span className="text-xs text-slate-400">{busy ? "Thinking" : "Ready"}</span>
+              <span className="text-xs text-slate-400">{busy ? "Thinking…" : "Ready"}</span>
             </div>
 
-            <div className="h-[330px] space-y-3 overflow-y-auto pr-1">
+            <div className="chat-scroll space-y-3 overflow-y-auto pr-1">
               {messages.map((message, index) => (
                 <div
                   key={`${message.role}-${index}`}
                   className={`rounded-lg border p-3 text-sm leading-6 ${
                     message.role === "assistant"
                       ? "border-[var(--accent)]/20 bg-[var(--accent)]/[0.06] text-[var(--accent-text)]"
-                      : "ml-auto max-w-[86%] border-pink-300/20 bg-pink-400/[0.07] text-pink-50"
+                      : "ml-auto max-w-[90%] border-pink-300/20 bg-pink-400/[0.07] text-pink-50"
                   }`}
                 >
                   <p className="mb-1 text-xs uppercase tracking-[0.18em] text-slate-400">
@@ -455,23 +460,22 @@ export default function Home() {
               ))}
             </div>
 
-            <form onSubmit={onSubmit} className="mt-4 flex gap-2">
+            <form onSubmit={onSubmit} className="mt-3 flex gap-2">
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 placeholder="Veronica, deploy coding mode."
-                className="min-w-0 flex-1 rounded-lg border border-[var(--accent)]/20 bg-black/30 px-3 py-3 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-[var(--accent-strong)]"
+                className="min-w-0 flex-1 rounded-lg border border-[var(--accent)]/20 bg-black/30 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-400 focus:border-[var(--accent-strong)] sm:py-3"
               />
               <button
                 disabled={busy}
-                className="rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/15 px-5 py-3 text-sm font-semibold text-[var(--accent-text)] transition hover:bg-[var(--accent)]/25 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-[var(--accent)]/40 bg-[var(--accent)]/15 px-4 py-2.5 text-sm font-semibold text-[var(--accent-text)] transition hover:bg-[var(--accent)]/25 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5 sm:py-3"
               >
                 Send
               </button>
             </form>
           </motion.div>
 
-          {/* Step 5 inner: third panel at 150+120=270 */}
           <motion.div {...(mounted ? fade(270) : {})}>
             <ErrorBoundary name="OperationsPanels">
               <OperationsPanels />
@@ -479,68 +483,15 @@ export default function Home() {
           </motion.div>
         </section>
 
-        {/* ── RIGHT PANEL ───────────────────────────────── */}
-        {/* Step 5: right col panels individually staggered at 300, 360, 420 */}
-        <aside className="space-y-4">
-          <motion.div
-            {...(mounted ? fade(300) : {})}
-            className="hud-panel rounded-lg p-4"
-          >
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <Code2 size={16} /> Protocols
-            </p>
-            <div className="space-y-2">
-              {starterTasks.map((task) => (
-                <button
-                  key={task}
-                  onClick={() => void sendMessage(`Veronica, ${task.toLowerCase()}.`)}
-                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] p-3 text-left text-sm text-slate-200 transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent)]/[0.07]"
-                >
-                  {task}
-                </button>
-              ))}
-            </div>
-          </motion.div>
-
-          <motion.div
-            {...(mounted ? fade(360) : {})}
-            className="hud-panel rounded-lg p-4"
-          >
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <Shield size={16} /> Security Rules
-            </p>
-            <div className="space-y-3 text-sm text-slate-300">
-              <p>Dangerous actions require confirmation.</p>
-              <p>Secrets stay server-side.</p>
-              <p>Autonomous steps are logged.</p>
-              <p>Shell execution is whitelist-first.</p>
-            </div>
-          </motion.div>
-
-          <motion.div
-            {...(mounted ? fade(420) : {})}
-            className="hud-panel rounded-lg p-4"
-          >
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <Bell size={16} /> Live Notifications
-            </p>
-            <div className="space-y-2">
-              {notifications.map((notification, index) => (
-                <div
-                  key={`${notification}-${index}`}
-                  className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-slate-300"
-                >
-                  {notification}
-                </div>
-              ))}
-            </div>
-          </motion.div>
-
-          <motion.div {...(mounted ? fade(480) : {})}>
-            <PomodoroWidget onSend={(msg) => void sendMessage(msg)} />
-          </motion.div>
-
-          {/* <VoicePanel /> — NOT IN USE */}
+        {/* ── RIGHT PANEL — desktop only ─────────────── */}
+        <aside className="panel-right min-w-0 overflow-hidden space-y-4">
+          <RightPanelContent
+            starterTasks={starterTasks}
+            notifications={notifications}
+            busy={busy}
+            sendMessage={sendMessage}
+            mounted={mounted}
+          />
         </aside>
       </div>
     </main>
@@ -676,5 +627,126 @@ function PomodoroWidget({ onSend }: { onSend: (msg: string) => void }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Extracted panel content components ──────────────────── */
+
+function LeftPanelContent({
+  mode, setMode, apiOffline, telemetry, chatLatency, mounted,
+}: {
+  mode: Mode;
+  setMode: (m: Mode) => void;
+  apiOffline: boolean;
+  telemetry: { model: Record<string, unknown> | null | undefined; system: Record<string, unknown> | null | undefined; latencyMs: number | null | undefined; online: boolean };
+  chatLatency: number | null;
+  mounted: boolean;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-3 border-b border-[var(--accent)]/20 pb-4">
+        <BrainCircuit style={{ color: "var(--accent-strong)" }} />
+        <div>
+          <p className="text-xs uppercase tracking-[0.28em]" style={{ color: "var(--accent-text)" }}>VERONICA</p>
+          <h1 className="text-xl font-semibold">Command OS</h1>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-2">
+        {modes.map((item) => {
+          const active = mode === item.id;
+          return (
+            <button
+              key={item.id}
+              onClick={() => setMode(item.id)}
+              aria-pressed={active}
+              className={`w-full rounded-lg border p-3 text-left transition ${
+                active
+                  ? "border-[var(--accent-strong)] bg-[var(--accent)]/12 text-white shadow-hud"
+                  : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-[var(--accent)]/50"
+              }`}
+            >
+              <span className="block text-sm font-semibold">{item.label}</span>
+              <span className="text-xs text-slate-400">{item.detail}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {mode === "SENTINEL" && (
+        <div
+          className="mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
+          style={{ color: "var(--accent-strong)", borderColor: "var(--accent-border)", background: "var(--accent-glow)" }}
+        >
+          <span className="animate-pulse">&#9679;</span>
+          <span className="uppercase tracking-widest">THREAT LEVEL: MONITORING</span>
+        </div>
+      )}
+
+      <SystemMonitor
+        apiOffline={apiOffline}
+        model={telemetry.model}
+        system={telemetry.system}
+        latencyMs={telemetry.latencyMs}
+        chatLatency={chatLatency}
+        mounted={mounted}
+      />
+    </>
+  );
+}
+
+function RightPanelContent({
+  starterTasks, notifications, busy, sendMessage, mounted,
+}: {
+  starterTasks: string[];
+  notifications: string[];
+  busy: boolean;
+  sendMessage: (msg: string) => void;
+  mounted: boolean;
+}) {
+  return (
+    <>
+      <motion.div {...(mounted ? fade(300) : {})} className="hud-panel min-w-0 overflow-hidden rounded-lg p-4">
+        <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
+          <Code2 size={16} /> Protocols
+        </p>
+        <div className="space-y-2">
+          {starterTasks.map((task) => (
+            <button
+              key={task}
+              onClick={() => void sendMessage(`Veronica, ${task.toLowerCase()}.`)}
+              className="w-full rounded-lg border border-white/10 bg-white/[0.03] p-3 text-left text-sm text-slate-200 transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent)]/[0.07]"
+            >
+              {task}
+            </button>
+          ))}
+        </div>
+      </motion.div>
+
+      <motion.div {...(mounted ? fade(360) : {})} className="hud-panel min-w-0 overflow-hidden rounded-lg p-4">
+        <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
+          <Shield size={16} /> Security Rules
+        </p>
+        <div className="space-y-3 text-sm text-slate-300">
+          <p>Dangerous actions require confirmation.</p>
+          <p>Secrets stay server-side.</p>
+          <p>Autonomous steps are logged.</p>
+          <p>Shell execution is whitelist-first.</p>
+        </div>
+      </motion.div>
+
+      <motion.div {...(mounted ? fade(420) : {})} className="hud-panel min-w-0 overflow-hidden rounded-lg p-4">
+        <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
+          <Bell size={16} /> Live Notifications
+        </p>
+        <div className="space-y-2">
+          {notifications.map((notification, index) => (
+            <div key={`${notification}-${index}`} className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-slate-300">
+              {notification}
+            </div>
+          ))}
+        </div>
+      </motion.div>
+    </>
   );
 }

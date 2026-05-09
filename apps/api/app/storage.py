@@ -4,6 +4,7 @@ import re
 import json
 import math
 import logging
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -44,20 +45,24 @@ def format_due_label(due_at: str | None) -> str | None:
     return due_at
 
 
+_FUZZY_THRESHOLD = 0.90
+
+
+def _fuzzy_duplicate(new: str, rows: list) -> dict | None:
+    """Return the first row whose content is ≥90% similar to new (case-insensitive)."""
+    a = new.lower().strip()
+    for row in rows:
+        b = (row["content"] or "").lower().strip()
+        if SequenceMatcher(None, a, b).ratio() >= _FUZZY_THRESHOLD:
+            return dict(row)
+    return None
+
+
 def create_note(content: str) -> dict[str, Any]:
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, content, created_at
-            FROM notes
-            WHERE lower(trim(content)) = lower(trim(?))
-            ORDER BY datetime(created_at) DESC
-            LIMIT 1
-            """,
-            (content,),
-        )
-        existing = cursor.fetchone()
+        cursor.execute("SELECT id, content, created_at FROM notes ORDER BY datetime(created_at) DESC LIMIT 200")
+        existing = _fuzzy_duplicate(content, cursor.fetchall())
         if existing:
             return {"id": existing["id"], "content": existing["content"], "duplicate": True}
 
@@ -383,12 +388,10 @@ def get_recent_summary(session_id: str) -> str | None:
 def create_memory(content: str, tags: str = "") -> dict[str, Any]:
     with get_db() as conn:
         cursor = conn.cursor()
-        existing = cursor.execute(
-            "SELECT id, content, created_at FROM memories WHERE lower(trim(content)) = lower(trim(?)) LIMIT 1",
-            (content,),
-        ).fetchone()
+        cursor.execute("SELECT id, content, created_at FROM memories ORDER BY datetime(created_at) DESC LIMIT 200")
+        existing = _fuzzy_duplicate(content, cursor.fetchall())
         if existing:
-            return {**dict(existing), "duplicate": True}
+            return {**existing, "duplicate": True}
 
         emb = get_embedding(content)
         embedding_str = json.dumps(emb) if emb else None
@@ -518,11 +521,14 @@ def semantic_search(query: str, limit: int = 8) -> list[dict[str, Any]]:
             "SELECT id, content, embedding, created_at FROM notes"
         ).fetchall()
 
+    kw_words = [w for w in kw.split() if len(w) > 3]
+
     for row, source in [(r, "memory") for r in rows_mem] + [(r, "note") for r in rows_note]:
         item = dict(row)
         emb_str = item.pop("embedding", None)
         item["source"] = source
-        has_kw = kw in (item.get("content") or "").lower()
+        content_lower = (item.get("content") or "").lower()
+        has_kw = kw in content_lower or any(w in content_lower for w in kw_words)
 
         if emb_str and query_emb:
             try:

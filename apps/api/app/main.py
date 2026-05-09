@@ -108,7 +108,12 @@ async def _compose_wa_reply(messages: list[dict], contact_name: str) -> str:
         f"You are {sender}, writing a WhatsApp reply to {contact_name}. "
         "Output ONLY the reply message — no labels, no quotes, no explanation. "
         "Casual and natural, 1-3 sentences, first person. Match the tone of the conversation. "
-        "NEVER mention Veronica, AI, or any automated system."
+        "NEVER mention Veronica, AI, or any automated system. "
+        "CRITICAL: Only use facts that are EXPLICITLY visible in the conversation. "
+        "Do NOT invent or assume any actions, states, or context about the sender "
+        "(e.g. do not say 'I already did X' or 'I'm on Y' unless the conversation proves it). "
+        "If the last message needs a simple acknowledgement or follow-up question, do that — "
+        "don't pad with invented context."
     )
     user_prompt = (
         f"Conversation:\n{conversation}\n\n"
@@ -427,6 +432,35 @@ async def _handle_pending_confirmation(
         return (_cancel_msgs.get(ptype, "Draft discarded."), "cancelled")
 
     return None
+
+
+def _build_search_context(intent) -> dict | None:
+    """
+    When the intent is a semantic search, return a system context message so the LLM
+    can synthesize an answer using both its own knowledge and the user's stored notes.
+    Notes are presented as user-authored content, not verified facts.
+    """
+    if intent.type != "llm":
+        return None
+    results = intent.payload.get("search_results")
+    topic = intent.payload.get("search_topic")
+    if results is None or topic is None:
+        return None
+    if results:
+        lines = "\n".join(f"- [{r['source']}] {r['content']}" for r in results)
+        content = (
+            f"The user asked about \"{topic}\". "
+            f"Here are their stored notes/memories on this topic (user-authored, not verified facts — "
+            f"cross-check against your own knowledge and flag anything incorrect):\n{lines}\n\n"
+            f"Synthesize a complete answer combining what you know and what is stored. "
+            f"If a stored note is factually wrong, say so directly."
+        )
+    else:
+        content = (
+            f"The user asked about \"{topic}\". "
+            f"No stored notes found on this topic. Answer from your own knowledge."
+        )
+    return {"role": "system", "content": content}
 
 
 def get_or_create_window(session_id: str) -> BoundedContextWindow:
@@ -793,27 +827,36 @@ async def chat(
             tool_results.append(result)
             if tool_name == "gmail_draft" and result.get("ok"):
                 save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
-            # Short-circuit: tools with canned replies bypass the LLM entirely
-            direct_text = _tool_direct_reply(tool_name, result)
-            if direct_text:
-                if _reply_ctx:
-                    contact = args.get("contact", "")
-                    if contact and contact != "__last__":
-                        _last_wa_contact[session_id] = (contact, contact)
-                    msgs = result.get("messages") or []
+
+            # reply_context: auto-compose WA reply regardless of direct_text
+            if _reply_ctx:
+                contact = args.get("contact", "")
+                if contact and contact != "__last__":
+                    _last_wa_contact[session_id] = (contact, contact)
+                msgs = result.get("messages") or []
+                if msgs:
                     composed = await _compose_wa_reply(msgs, contact)
                     if composed:
                         display, resolved, resolved_ok = await _resolve_wa_recipient(contact)
                         resolved_args = {"to": resolved, "text": composed, "display_name": display}
                         save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
-                        if resolved_ok:
-                            reply_preview = f"{direct_text}\n\nReply to {display}:\n\n{composed}\n\nSend this?"
-                        else:
-                            reply_preview = f"{direct_text}\n\nReply to {display} (number not verified):\n\n{composed}\n\nSend this?"
+                        last_msg = next((m.get("body", "") for m in msgs if not m.get("fromMe")), "")
+                        convo_line = f"Last from {contact}: \"{last_msg}\"\n\n" if last_msg else ""
+                        num_tag = "" if resolved_ok else " (number not verified)"
+                        reply_preview = f"{convo_line}Suggested reply to {display}{num_tag}:\n\n{composed}\n\nSend this?"
                         window.add_message("assistant", reply_preview)
                         log_action("VERONICA", f"chat:{request.mode.value}:wa_reply_preview", "low", True, reply_preview[:240])
                         return _direct_response(mode=request.mode, text=reply_preview, provider_status="wa_preview", suggested=["Yes, send it", "Cancel"])
-                    direct_text += "\n\nWhat would you like to say back?"
+                    fallback = f"Got the conversation with {contact} but couldn't compose a reply. What would you like to say?"
+                else:
+                    fallback = f"No messages found with {contact}, sir. What would you like to say to them?"
+                window.add_message("assistant", fallback)
+                log_action("VERONICA", f"chat:{request.mode.value}:wa_reply_fallback", "low", True, fallback[:240])
+                return _direct_response(mode=request.mode, text=fallback, provider_status="wa_reply_fallback", suggested=[])
+
+            # Short-circuit: tools with canned replies bypass the LLM entirely
+            direct_text = _tool_direct_reply(tool_name, result)
+            if direct_text:
                 window.add_message("assistant", direct_text)
                 log_action("VERONICA", f"chat:{request.mode.value}:tool_direct:{tool_name}", "low", True, direct_text[:240])
                 return _direct_response(mode=request.mode, text=direct_text, provider_status="tool_direct", suggested=[])
@@ -826,6 +869,12 @@ async def chat(
         history = [{"role": "system", "content": f"Session summary: {recent_summary}"}] + history
 
     storage_context = build_assistant_context(request.message)
+
+    # Semantic search intent: inject retrieved notes as context for the LLM to synthesize
+    search_ctx = _build_search_context(intent)
+    if search_ctx:
+        storage_context = [search_ctx] + storage_context
+
     enriched = request.model_copy(update={"history": storage_context + history})
 
     response = await generate_response(enriched, forced_protocol=forced_protocol, tool_results=tool_results)
@@ -1004,27 +1053,35 @@ async def chat_stream(
             tool_results.append(result)
             if tool_name == "gmail_draft" and result.get("ok"):
                 save_pending_action(session_id, {"type": "email_confirm", "tool": "gmail_send", "args": args})
-            # Short-circuit: tools with canned replies bypass the LLM entirely
-            direct_text = _tool_direct_reply(tool_name, result)
-            if direct_text:
-                if _reply_ctx:
-                    contact = args.get("contact", "")
-                    if contact and contact != "__last__":
-                        _last_wa_contact[session_id] = (contact, contact)
-                    msgs = result.get("messages") or []
+
+            # reply_context: auto-compose WA reply regardless of direct_text
+            if _reply_ctx:
+                contact = args.get("contact", "")
+                if contact and contact != "__last__":
+                    _last_wa_contact[session_id] = (contact, contact)
+                msgs = result.get("messages") or []
+                if msgs:
                     composed = await _compose_wa_reply(msgs, contact)
                     if composed:
                         display, resolved, resolved_ok = await _resolve_wa_recipient(contact)
                         resolved_args = {"to": resolved, "text": composed, "display_name": display}
                         save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
-                        if resolved_ok:
-                            reply_preview = f"{direct_text}\n\nReply to {display}:\n\n{composed}\n\nSend this?"
-                        else:
-                            reply_preview = f"{direct_text}\n\nReply to {display} (number not verified):\n\n{composed}\n\nSend this?"
+                        last_msg = next((m.get("body", "") for m in msgs if not m.get("fromMe")), "")
+                        convo_line = f"Last from {contact}: \"{last_msg}\"\n\n" if last_msg else ""
+                        num_tag = "" if resolved_ok else " (number not verified)"
+                        reply_preview = f"{convo_line}Suggested reply to {display}{num_tag}:\n\n{composed}\n\nSend this?"
                         window.add_message("assistant", reply_preview)
                         log_action("VERONICA", f"chat:{request.mode.value}:wa_reply_preview", "low", True, reply_preview[:240])
                         return await emit_single(reply_preview, "wa_preview")
-                    direct_text += "\n\nWhat would you like to say back?"
+                    fallback = f"Got the conversation with {contact} but couldn't compose a reply. What would you like to say?"
+                else:
+                    fallback = f"No messages found with {contact}, sir. What would you like to say to them?"
+                window.add_message("assistant", fallback)
+                return await emit_single(fallback, "wa_reply_fallback")
+
+            # Short-circuit: tools with canned replies bypass the LLM entirely
+            direct_text = _tool_direct_reply(tool_name, result)
+            if direct_text:
                 window.add_message("assistant", direct_text)
                 log_action("VERONICA", f"chat:{request.mode.value}:tool_direct:{tool_name}", "low", True, direct_text[:240])
                 return await emit_single(direct_text, "tool_direct")
@@ -1037,6 +1094,12 @@ async def chat_stream(
         history = [{"role": "system", "content": f"Session summary: {recent_summary}"}] + history
 
     storage_context = build_assistant_context(request.message)
+
+    # Semantic search intent: inject retrieved notes as context for the LLM to synthesize
+    search_ctx = _build_search_context(intent)
+    if search_ctx:
+        storage_context = [search_ctx] + storage_context
+
     enriched = request.model_copy(update={"history": storage_context + history})
 
     async def event_stream():
@@ -2167,8 +2230,19 @@ async def journal_today_route() -> dict:
 
 @app.post("/journal/generate")
 async def journal_generate_route(payload: dict = {}) -> dict:
-    from app.journal import generate_journal_entry
+    from app.journal import generate_journal_entry, get_journal
+    from app.db import get_db
     date_str = (payload or {}).get("date") or None
+    force = bool((payload or {}).get("force", False))
+    if force:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+        d = date_str or _dt.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+        with get_db() as conn:
+            conn.execute(
+                "DELETE FROM life_log WHERE entry_type = 'daily_journal' AND title = ?",
+                (f"Journal — {d}",),
+            )
     return await asyncio.to_thread(generate_journal_entry, date_str)
 
 

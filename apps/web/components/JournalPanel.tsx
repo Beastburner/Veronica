@@ -23,6 +23,7 @@ export default function JournalPanel() {
   const [selected, setSelected] = useState<JournalEntry | null>(null);
   const [loading, setLoading]   = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [justWrote, setJustWrote]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
   async function load() {
@@ -45,12 +46,18 @@ export default function JournalPanel() {
     setGenerating(true);
     setError(null);
     try {
-      const entry = await api<JournalEntry>("/journal/generate", { method: "POST" });
+      const entry = await api<JournalEntry>("/journal/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
       setEntries(prev => {
         const filtered = prev.filter(e => e.date !== entry.date);
         return [entry, ...filtered];
       });
       setSelected(entry);
+      setJustWrote(true);
+      setTimeout(() => setJustWrote(false), 2000);
     } catch {
       setError("Failed to generate today's journal.");
     } finally {
@@ -82,7 +89,7 @@ export default function JournalPanel() {
           className="mb-1 flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-slate-300 transition hover:bg-white/10 disabled:opacity-50"
         >
           <Sparkles className="h-3 w-3 shrink-0" />
-          {generating ? "Writing…" : "Write Today"}
+          {generating ? "Writing…" : justWrote ? "✓ Done" : "Write Today"}
         </button>
 
         {loading && (

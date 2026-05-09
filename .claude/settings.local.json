@@ -83,7 +83,9 @@
       "PowerShell(taskkill *)",
       "Bash(dir node_modules)",
       "Bash(where node *)",
-      "PowerShell(Test-Path *)"
+      "PowerShell(Test-Path *)",
+      "PowerShell(ls \"$env:USERPROFILE\\\\.veronica-wa-session\" -ErrorAction SilentlyContinue; if \\(-not $?\\) { \"Session directory does not exist\" })",
+      "PowerShell(ls \"$env:USERPROFILE\\\\.veronica-wa-session\\\\session-veronica\" | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize)"
     ]
   }
 }
