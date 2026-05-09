@@ -308,7 +308,7 @@ The confirmation-first pattern means VERONICA will **always show you the message
 |-------|------------|
 | LLM | Ollama (local, any model — | TTS | ElevenLabs (optional) |
 | WhatsApp | whatsapp-web.js (Puppeteer, local) |
-��──────┤
+��──────┤
   │ Backfill          │ Scheduler embeds existing records without embeddings (on startup + every 10min) │
   ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────┤
   │ Unified search    │ semantic_search() searches across memories AND notes by cosine similarity       │

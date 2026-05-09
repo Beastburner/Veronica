@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, CheckSquare, Flame, Globe, NotebookPen, TimerReset } from "lucide-react";
+import { CalendarClock, Check, CheckSquare, Flame, Globe, NotebookPen, TimerReset, X } from "lucide-react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { CalendarPanel } from "@/components/CalendarPanel";
 import { EmailPanel } from "@/components/EmailPanel";
@@ -167,7 +167,7 @@ export function OperationsPanels() {
 
   const btn = "rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-1 text-xs text-[var(--accent-text)] hover:bg-[var(--accent)]/20 transition";
   const btnDanger = "rounded-lg border border-pink-300/30 px-2 py-1 text-xs text-pink-200 hover:bg-pink-400/10 transition";
-  const input = "min-w-0 flex-1 rounded-lg border border-[var(--accent)]/20 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent)]/50";
+  const input = "min-w-0 flex-1 rounded-lg border border-[var(--accent)]/20 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[var(--accent-strong)]";
 
   return (
     <div className="space-y-4">
@@ -227,7 +227,7 @@ export function OperationsPanels() {
                     <div>
                       <p className={`text-sm font-medium ${h.done_today ? "line-through text-slate-400" : "text-slate-100"}`}>{h.name}</p>
                       <p className="text-xs text-slate-500">
-                        {h.streak > 0 ? `🔥 ${h.streak}-day streak` : "No streak yet"}
+                        {h.streak > 0 ? `${h.streak}-day streak` : "No streak yet"}
                         {" · "}{h.frequency}
                       </p>
                     </div>
@@ -238,7 +238,7 @@ export function OperationsPanels() {
                         ? "border-emerald-400/40 text-emerald-300 bg-emerald-400/10 cursor-default"
                         : "border-[var(--accent)]/30 text-[var(--accent-text)] hover:bg-[var(--accent)]/20"
                     }`}>
-                    {h.done_today ? "Done ✓" : "Mark done"}
+                    {h.done_today ? <><Check size={10} className="inline mr-1" />Done</> : "Mark done"}
                   </button>
                 </div>
               ))}
@@ -273,7 +273,7 @@ export function OperationsPanels() {
                 <p className="text-xs text-slate-500">{news.total} articles · {new Date(news.fetched_at).toLocaleTimeString()}</p>
                 {Array.from(grouped.entries()).map(([feedTitle, articles], fi) => (
                   <div key={fi}>
-                    <p className="text-xs uppercase tracking-widest text-slate-400 mb-2">{feedTitle}</p>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-400 mb-2">{feedTitle}</p>
                     <div className="space-y-2">
                       {articles.slice(0, 3).map((a, ai) => (
                         <a key={ai} href={a.link} target="_blank" rel="noopener noreferrer"
@@ -340,11 +340,11 @@ export function OperationsPanels() {
                 <div key={t.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
                   <div>
                     <p className="text-slate-100">{t.description}</p>
-                    <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{t.priority}</p>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{t.priority}</p>
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => void patch(`/tasks/${t.id}`, { status: "done" }).then(refreshOps)} className={btn}>Done</button>
-                    <button onClick={() => void del(`/tasks/${t.id}`).then(refreshOps)} className={btnDanger}>✕</button>
+                    <button onClick={() => void del(`/tasks/${t.id}`).then(refreshOps)} className={btnDanger}><X size={10} /></button>
                   </div>
                 </div>
               ))}
@@ -367,7 +367,7 @@ export function OperationsPanels() {
               {notes.map((n) => (
                 <div key={n.id} className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-200">
                   <span>{n.content}</span>
-                  <button onClick={() => void del(`/notes/${n.id}`).then(refreshOps)} className={btnDanger}>✕</button>
+                  <button onClick={() => void del(`/notes/${n.id}`).then(refreshOps)} className={btnDanger}><X size={10} /></button>
                 </div>
               ))}
             </div>
@@ -399,11 +399,11 @@ export function OperationsPanels() {
                 <div key={r.id} className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-200">
                   <div>
                     <span>{r.content}</span>
-                    {r.due_label && <p className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">{r.due_label}</p>}
+                    {r.due_label && <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">{r.due_label}</p>}
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => void patch(`/reminders/${r.id}`, { status: "done" }).then(refreshOps)} className={btn}>Done</button>
-                    <button onClick={() => void del(`/reminders/${r.id}`).then(refreshOps)} className={btnDanger}>✕</button>
+                    <button onClick={() => void del(`/reminders/${r.id}`).then(refreshOps)} className={btnDanger}><X size={10} /></button>
                   </div>
                 </div>
               ))}

@@ -89,7 +89,7 @@ export default function JournalPanel() {
           className="mb-1 flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-slate-300 transition hover:bg-white/10 disabled:opacity-50"
         >
           <Sparkles className="h-3 w-3 shrink-0" />
-          {generating ? "Writing…" : justWrote ? "✓ Done" : "Write Today"}
+          {generating ? "Writing…" : justWrote ? "Done" : "Write Today"}
         </button>
 
         {loading && (
@@ -102,11 +102,11 @@ export default function JournalPanel() {
             onClick={() => setSelected(e)}
             className={`rounded-lg border px-2 py-1.5 text-left text-xs transition ${
               selected?.id === e.id
-                ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300"
+                ? "border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent-text)]"
                 : "border-white/10 bg-white/5 text-slate-400 hover:bg-white/10"
             }`}
           >
-            <span className={`block font-medium ${e.date === today ? "text-cyan-400" : ""}`}>
+            <span className={`block font-medium ${e.date === today ? "text-[var(--accent-strong)]" : ""}`}>
               {e.date === today ? "Today" : formatDate(e.date)}
             </span>
             <span className="mt-0.5 block truncate text-[10px] text-slate-500">
@@ -121,7 +121,7 @@ export default function JournalPanel() {
       </div>
 
       {/* Main — entry content */}
-      <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-white/10 bg-white/5 p-4">
+      <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-white/10 bg-white/5 p-4">
         {error && (
           <p className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</p>
         )}
@@ -130,7 +130,7 @@ export default function JournalPanel() {
           <>
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <BookOpen className="h-4 w-4 text-cyan-400" />
+                <BookOpen className="h-4 w-4" style={{ color: "var(--accent-strong)" }} />
                 <span className="text-sm font-semibold text-white">
                   {selected.date === today ? "Today" : formatDate(selected.date)}
                 </span>
@@ -154,7 +154,7 @@ export default function JournalPanel() {
             <button
               onClick={generateToday}
               disabled={generating}
-              className="flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-400 transition hover:bg-cyan-500/20 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-1.5 text-xs text-[var(--accent-text)] transition hover:bg-[var(--accent)]/20 disabled:opacity-50"
             >
               <Sparkles className="h-3 w-3" />
               {generating ? "Writing…" : "Generate Today's Entry"}

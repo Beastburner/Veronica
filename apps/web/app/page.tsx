@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Activity, AlertTriangle, Bell, BrainCircuit, Code2, LayoutDashboard, Shield, TerminalSquare, X } from "lucide-react";
+import { Activity, AlertTriangle, Bell, BrainCircuit, Code2, LayoutDashboard, Shield, TerminalSquare, Timer, X } from "lucide-react";
 import React, { FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import { ArcCore } from "@/components/ArcCore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -309,6 +309,7 @@ export default function Home() {
       className="relative min-h-screen overflow-x-hidden px-3 py-3 text-slate-100 sm:px-4 sm:py-4"
     >
       <div className="scanlines absolute inset-0 opacity-25" />
+      <div className="scan-line" />
 
       {/* Status banners */}
       {apiOffline && (
@@ -339,7 +340,7 @@ export default function Home() {
           <BrainCircuit size={14} /> Command OS
         </button>
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold tracking-widest" style={{ color: "var(--accent-text)" }}>{mode}</span>
+          <span className="text-xs font-semibold tracking-[0.18em]" style={{ color: "var(--accent-text)" }}>{mode}</span>
         </div>
         <button
           onClick={() => { setShowRight(true); setShowLeft(false); }}
@@ -405,7 +406,7 @@ export default function Home() {
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
-                <p className="text-xs uppercase tracking-[0.2em]" style={{ color: "var(--accent-text)" }}>
+                <p className="text-xs uppercase tracking-[0.18em]" style={{ color: "var(--accent-text)" }}>
                   Active Mode: {mode}
                 </p>
                 <h2 className="mt-1 text-xl font-semibold sm:text-2xl lg:text-3xl truncate">Arc command interface</h2>
@@ -440,7 +441,7 @@ export default function Home() {
               {messages.map((message, index) => (
                 <div
                   key={`${message.role}-${index}`}
-                  className={`rounded-lg border p-3 text-sm leading-6 ${
+                  className={`msg-in rounded-lg border p-3 text-sm leading-6 ${
                     message.role === "assistant"
                       ? "border-[var(--accent)]/20 bg-[var(--accent)]/[0.06] text-[var(--accent-text)]"
                       : "ml-auto max-w-[90%] border-pink-300/20 bg-pink-400/[0.07] text-pink-50"
@@ -605,7 +606,7 @@ function PomodoroWidget({ onSend }: { onSend: (msg: string) => void }) {
 
   return (
     <div className="rounded-lg border border-white/10 bg-black/20 p-3">
-      <p className="mb-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>⏱ Focus Timer</p>
+      <p className="mb-2 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}><Timer size={16} /> Focus Timer</p>
       {status?.active ? (
         <>
           <p className="text-xs text-slate-400 mb-1 truncate">{status.label}</p>
@@ -620,7 +621,7 @@ function PomodoroWidget({ onSend }: { onSend: (msg: string) => void }) {
       ) : (
         <div className="flex gap-2">
           <input value={labelInput} onChange={(e) => setLabelInput(e.target.value)} placeholder="Task label (optional)"
-            className="min-w-0 flex-1 rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-white outline-none placeholder:text-slate-500" />
+            className="min-w-0 flex-1 rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-white outline-none transition placeholder:text-slate-500 focus:border-[var(--accent-strong)]" />
           <button onClick={() => void start()} className="rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-xs text-[var(--accent-text)] hover:bg-[var(--accent)]/20 transition">
             25 min
           </button>
@@ -647,7 +648,7 @@ function LeftPanelContent({
       <div className="flex items-center gap-3 border-b border-[var(--accent)]/20 pb-4">
         <BrainCircuit style={{ color: "var(--accent-strong)" }} />
         <div>
-          <p className="text-xs uppercase tracking-[0.28em]" style={{ color: "var(--accent-text)" }}>VERONICA</p>
+          <p className="text-xs uppercase tracking-[0.18em]" style={{ color: "var(--accent-text)" }}>VERONICA</p>
           <h1 className="text-xl font-semibold">Command OS</h1>
         </div>
       </div>
@@ -662,7 +663,7 @@ function LeftPanelContent({
               aria-pressed={active}
               className={`w-full rounded-lg border p-3 text-left transition ${
                 active
-                  ? "border-[var(--accent-strong)] bg-[var(--accent)]/12 text-white shadow-hud"
+                  ? "mode-active border-[var(--accent-strong)] bg-[var(--accent)]/12 text-white"
                   : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-[var(--accent)]/50"
               }`}
             >
@@ -679,7 +680,7 @@ function LeftPanelContent({
           style={{ color: "var(--accent-strong)", borderColor: "var(--accent-border)", background: "var(--accent-glow)" }}
         >
           <span className="animate-pulse">&#9679;</span>
-          <span className="uppercase tracking-widest">THREAT LEVEL: MONITORING</span>
+          <span className="uppercase tracking-[0.18em]">THREAT LEVEL: MONITORING</span>
         </div>
       )}
 

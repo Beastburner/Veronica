@@ -23,13 +23,40 @@ foreach ($c in @("python", "python3")) {
     }
 }
 if (-not $pythonCmd) {
-    Write-Fail "Python not found. Install Python 3.11+ from https://python.org then re-run."
-    exit 1
+    Write-Warn "Python not found -- attempting automatic install via winget..."
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id Python.Python.3.12 -e --silent --accept-source-agreements --accept-package-agreements
+        # Refresh PATH so the new Python is visible in this session
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        foreach ($c in @("python", "python3")) {
+            if (Get-Command $c -ErrorAction SilentlyContinue) {
+                $pythonCmd = $c
+                break
+            }
+        }
+        if ($pythonCmd) {
+            Write-OK "Python installed successfully"
+        }
+    } else {
+        Write-Warn "winget not available on this machine."
+    }
+    if (-not $pythonCmd) {
+        Write-Fail "Python install failed. Download Python 3.12 from https://python.org, run the installer, then re-run this script."
+        exit 1
+    }
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Fail "Node.js not found. Install Node 18+ from https://nodejs.org then re-run."
-    exit 1
+    Write-Warn "Node.js not found -- attempting automatic install via winget..."
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --accept-package-agreements
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Fail "Node.js install failed. Download Node 18+ from https://nodejs.org, run the installer, then re-run this script."
+        exit 1
+    }
+    Write-OK "Node.js installed successfully"
 }
 
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {

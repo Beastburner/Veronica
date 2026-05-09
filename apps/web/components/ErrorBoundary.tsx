@@ -23,7 +23,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="hud-panel rounded-lg p-4 border border-red-500/40">
           <div className="flex items-center gap-2 text-red-400 text-sm">
             <AlertTriangle size={14} />
-            <span className="uppercase tracking-widest text-xs">
+            <span className="uppercase tracking-[0.18em] text-xs">
               VERONICA - {this.props.name.toUpperCase()} SUBSYSTEM OFFLINE
             </span>
           </div>
