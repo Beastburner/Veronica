@@ -244,17 +244,17 @@ export function EmailPanel() {
       )}
 
       {selected && (
-        <div className="mb-3 rounded-lg border border-white/10 bg-black/20 p-3">
-          <div className="mb-2 flex items-start justify-between gap-2">
-            <p className="text-xs font-semibold text-slate-200">
+        <div className="mb-3 rounded-lg border border-white/10 bg-black/20 p-3 min-w-0 overflow-hidden">
+          <div className="mb-2 flex items-start justify-between gap-2 min-w-0">
+            <p className="text-xs font-semibold text-slate-200 truncate min-w-0">
               {emails.find((e) => e.id === selected)?.subject ?? "Email"}
             </p>
             <button onClick={() => { setSelected(null); setSelectedBody(null); }}>
-              <X size={12} className="text-slate-400 hover:text-white" />
+              <X size={12} className="text-slate-400 hover:text-white shrink-0" />
             </button>
           </div>
-          <p className="text-xs text-slate-400 mb-2">{emails.find((e) => e.id === selected)?.from}</p>
-          <pre className="text-xs text-slate-300 whitespace-pre-wrap max-h-48 overflow-y-auto">
+          <p className="text-xs text-slate-400 mb-2 truncate">{emails.find((e) => e.id === selected)?.from}</p>
+          <pre className="text-xs text-slate-300 whitespace-pre-wrap break-words max-h-48 overflow-y-auto overflow-x-hidden">
             {selectedBody ?? "Loading..."}
           </pre>
           <button
@@ -280,14 +280,14 @@ export function EmailPanel() {
           <button
             key={email.id}
             onClick={() => void openEmail(email.id)}
-            className={`w-full rounded-lg border p-2.5 text-left transition ${
+            className={`w-full min-w-0 overflow-hidden rounded-lg border p-2.5 text-left transition ${
               selected === email.id
                 ? "border-[var(--accent)]/40 bg-[var(--accent)]/10"
                 : "border-white/[0.07] bg-black/20 hover:border-white/20"
             }`}
           >
-            <div className="flex items-start justify-between gap-2">
-              <p className={`text-xs font-semibold truncate ${email.unread ? "text-white" : "text-slate-300"}`}>
+            <div className="flex items-start justify-between gap-2 min-w-0">
+              <p className={`text-xs font-semibold truncate min-w-0 ${email.unread ? "text-white" : "text-slate-300"}`}>
                 {email.from.split("<")[0].trim() || email.from}
               </p>
               <p className="text-[10px] text-slate-500 shrink-0">{email.date.split(",")[0]}</p>

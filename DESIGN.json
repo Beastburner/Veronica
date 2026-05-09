@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-10T00:00:00Z",
+  "title": "Design System: VERONICA Command Center",
+  "extensions": {
+    "colorMeta": {
+      "arc-light":      { "role": "primary",   "displayName": "Arc Light",      "canonical": "oklch(88% 0.12 200)", "tonalRamp": ["oklch(15% 0.04 200)","oklch(25% 0.06 200)","oklch(35% 0.08 200)","oklch(48% 0.10 200)","oklch(60% 0.12 200)","oklch(72% 0.12 200)","oklch(83% 0.12 200)","oklch(93% 0.06 200)"] },
+      "ambercore":      { "role": "secondary", "displayName": "Ambercore",       "canonical": "oklch(89% 0.14 85)",  "tonalRamp": ["oklch(15% 0.05 85)","oklch(28% 0.08 85)","oklch(40% 0.11 85)","oklch(55% 0.13 85)","oklch(65% 0.14 85)","oklch(75% 0.14 85)","oklch(85% 0.14 85)","oklch(94% 0.07 85)"] },
+      "mode-veronica":  { "role": "secondary", "displayName": "Mode Veronica",   "canonical": "oklch(72% 0.20 290)", "tonalRamp": ["oklch(15% 0.06 290)","oklch(28% 0.10 290)","oklch(40% 0.14 290)","oklch(52% 0.17 290)","oklch(62% 0.20 290)","oklch(72% 0.20 290)","oklch(82% 0.16 290)","oklch(93% 0.08 290)"] },
+      "plasma-red":     { "role": "secondary", "displayName": "Plasma Red",      "canonical": "oklch(65% 0.22 18)",  "tonalRamp": ["oklch(15% 0.08 18)","oklch(25% 0.12 18)","oklch(35% 0.16 18)","oklch(48% 0.19 18)","oklch(60% 0.22 18)","oklch(70% 0.20 18)","oklch(80% 0.15 18)","oklch(92% 0.07 18)"] },
+      "plasma-alert":   { "role": "tertiary",  "displayName": "Plasma Alert",    "canonical": "oklch(60% 0.25 350)", "tonalRamp": ["oklch(15% 0.08 350)","oklch(25% 0.12 350)","oklch(35% 0.17 350)","oklch(48% 0.21 350)","oklch(58% 0.25 350)","oklch(70% 0.22 350)","oklch(82% 0.16 350)","oklch(93% 0.08 350)"] },
+      "void-deep":      { "role": "neutral",   "displayName": "Void Deep",       "canonical": "oklch(5% 0.005 220)", "tonalRamp": ["oklch(5% 0.005 220)","oklch(9% 0.006 220)","oklch(13% 0.007 220)","oklch(18% 0.008 220)","oklch(25% 0.009 220)","oklch(35% 0.008 220)","oklch(50% 0.007 220)","oklch(70% 0.005 220)"] },
+      "void-mid":       { "role": "neutral",   "displayName": "Void Mid",        "canonical": "oklch(9% 0.008 230)", "tonalRamp": ["oklch(5% 0.005 230)","oklch(9% 0.008 230)","oklch(14% 0.009 230)","oklch(20% 0.009 230)","oklch(30% 0.008 230)","oklch(42% 0.008 230)","oklch(58% 0.007 230)","oklch(75% 0.005 230)"] },
+      "ink-primary":    { "role": "neutral",   "displayName": "Ink Primary",     "canonical": "oklch(97% 0.008 215)", "tonalRamp": ["oklch(20% 0.006 215)","oklch(35% 0.007 215)","oklch(50% 0.008 215)","oklch(65% 0.008 215)","oklch(78% 0.008 215)","oklch(87% 0.008 215)","oklch(93% 0.007 215)","oklch(97% 0.008 215)"] },
+      "ink-accent":     { "role": "neutral",   "displayName": "Ink Accent",      "canonical": "oklch(95% 0.025 210)", "tonalRamp": ["oklch(20% 0.008 210)","oklch(35% 0.012 210)","oklch(50% 0.016 210)","oklch(65% 0.020 210)","oklch(78% 0.022 210)","oklch(87% 0.024 210)","oklch(92% 0.025 210)","oklch(96% 0.020 210)"] },
+      "ink-dim":        { "role": "neutral",   "displayName": "Ink Dim",         "canonical": "oklch(61% 0.008 240)", "tonalRamp": ["oklch(20% 0.004 240)","oklch(30% 0.005 240)","oklch(40% 0.006 240)","oklch(50% 0.007 240)","oklch(61% 0.008 240)","oklch(72% 0.007 240)","oklch(82% 0.006 240)","oklch(92% 0.004 240)"] },
+      "ink-ghost":      { "role": "neutral",   "displayName": "Ink Ghost",       "canonical": "oklch(42% 0.007 250)", "tonalRamp": ["oklch(15% 0.003 250)","oklch(25% 0.005 250)","oklch(35% 0.006 250)","oklch(42% 0.007 250)","oklch(55% 0.007 250)","oklch(68% 0.006 250)","oklch(80% 0.005 250)","oklch(92% 0.003 250)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display",  "purpose": "Major section headers, one per logical surface." },
+      "headline": { "displayName": "Headline", "purpose": "Panel section titles, mode name in header." },
+      "title":    { "displayName": "Title",    "purpose": "Card headers, list labels, tab labels — the primary workhorse step." },
+      "body":     { "displayName": "Body",     "purpose": "Message content, briefing text. Cap at 65ch." },
+      "label":    { "displayName": "Label",    "purpose": "Uppercase + 0.18em tracking for system-generated annotations only." },
+      "mono":     { "displayName": "Mono",     "purpose": "Code, IDs, latency values, terminal strings only." }
+    },
+    "shadows": [
+      { "name": "panel-ambient",  "value": "0 0 28px rgba(56,232,255,0.45), inset 0 0 20px rgba(5,10,16,0.5)", "purpose": "Signature .hud-panel elevation. Outward bloom + inset depth." },
+      { "name": "core-bloom",     "value": "0 0 80px rgba(56,232,255,0.45)",  "purpose": "Reserved for the ArcCore orb only. Never used on panels or cards." },
+      { "name": "panel-border",   "value": "rgba(56,232,255,0.22)",            "purpose": "1px border glow. The baseline 'surface exists' signal at rest." }
+    ],
+    "motion": [
+      { "name": "ease-state",      "value": "cubic-bezier(0.0, 0.0, 0.2, 1.0)", "duration": "200ms", "purpose": "Default for all hover/focus/active state transitions." },
+      { "name": "ease-enter",      "value": "cubic-bezier(0.0, 0.0, 0.2, 1.0)", "duration": "300ms", "purpose": "Component entrance (fade-up, msg-in). Ease-out only — no bounce." },
+      { "name": "reactor-pulse",   "value": "ease-in-out",                       "duration": "2400ms", "iterations": "infinite", "purpose": "Active mode button breathing glow. Applied via reactor-pulse keyframe." },
+      { "name": "h-scan",          "value": "linear",                            "duration": "8000ms", "iterations": "infinite", "purpose": "Horizontal scan sweep. Decorative ambient animation at low opacity." },
+      { "name": "drawer-spring",   "value": "spring(stiffness:300, damping:30)", "duration": "auto",   "purpose": "Mobile panel drawer slides (Framer Motion)." }
+    ],
+    "breakpoints": [
+      { "name": "sm",  "value": "640px",  "purpose": "Chat scroll height bump, button padding increase." },
+      { "name": "lg",  "value": "1024px", "purpose": "Three-column flex layout activates. Mobile drawers hidden." },
+      { "name": "xl",  "value": "1280px", "purpose": "Side panel width widens from 240px to 270px." }
+    ]
+  },
+  "components": [
+    {
+      "name": "HUD Panel",
+      "kind": "card",
+      "refersTo": "hud-panel",
+      "description": "The core container. Every surface in the system lives inside one. Corner brackets are its visual signature.",
+      "html": "<div class=\"ds-hud-panel\"><p class=\"ds-label\">System Status</p><p class=\"ds-body\">All systems nominal. Awaiting command.</p></div>",
+      "css": ".ds-hud-panel{position:relative;background:rgba(5,10,16,0.72);border:1px solid rgba(56,232,255,0.22);border-radius:8px;padding:16px;backdrop-filter:blur(18px);box-shadow:0 0 28px rgba(56,232,255,0.45),inset 0 0 20px rgba(5,10,16,0.5);color:#eefbff;font-family:'Space Grotesk',system-ui,sans-serif}.ds-hud-panel::before,.ds-hud-panel::after{content:'';position:absolute;width:12px;height:12px;border-color:rgba(56,232,255,0.55);border-style:solid;pointer-events:none}.ds-hud-panel::before{top:-1px;left:-1px;border-width:2px 0 0 2px;border-radius:2px 0 0 0}.ds-hud-panel::after{bottom:-1px;right:-1px;border-width:0 2px 2px 0;border-radius:0 0 2px 0}.ds-label{font-size:0.75rem;font-weight:400;letter-spacing:0.18em;text-transform:uppercase;color:#d6f7ff;margin-bottom:8px}.ds-body{font-size:0.875rem;color:#94a3b8;line-height:1.6}"
+    },
+    {
+      "name": "Action Button",
+      "kind": "button",
+      "refersTo": "button-action",
+      "description": "Primary interactive button. Armed and waiting — crisp response, 0.2s ease-out.",
+      "html": "<button class=\"ds-btn-action\">Send Command</button>",
+      "css": ".ds-btn-action{background:rgba(56,232,255,0.15);color:#d6f7ff;border:1px solid rgba(56,232,255,0.4);border-radius:8px;padding:10px 20px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.875rem;font-weight:600;cursor:pointer;transition:background 0.2s ease-out,border-color 0.2s ease-out}.ds-btn-action:hover{background:rgba(56,232,255,0.25);border-color:rgba(56,232,255,0.6)}.ds-btn-action:focus-visible{outline:2px solid #38e8ff;outline-offset:2px}.ds-btn-action:disabled{opacity:0.5;cursor:not-allowed}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Secondary action within a panel. Transparent at rest, tinted on hover.",
+      "html": "<button class=\"ds-btn-ghost\">View Details</button>",
+      "css": ".ds-btn-ghost{background:transparent;color:#d6f7ff;border:1px solid rgba(56,232,255,0.3);border-radius:8px;padding:6px 12px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.75rem;cursor:pointer;transition:background 0.2s ease-out}.ds-btn-ghost:hover{background:rgba(56,232,255,0.1)}.ds-btn-ghost:focus-visible{outline:2px solid #38e8ff;outline-offset:2px}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive actions only. Plasma Alert tint signals irreversibility.",
+      "html": "<button class=\"ds-btn-danger\">Delete Entry</button>",
+      "css": ".ds-btn-danger{background:transparent;color:#ffd9dc;border:1px solid rgba(255,95,109,0.3);border-radius:8px;padding:6px 12px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.75rem;cursor:pointer;transition:background 0.2s ease-out}.ds-btn-danger:hover{background:rgba(255,63,129,0.1)}.ds-btn-danger:focus-visible{outline:2px solid #ff5f6d;outline-offset:2px}"
+    },
+    {
+      "name": "Command Input",
+      "kind": "input",
+      "refersTo": "input-command",
+      "description": "Near-invisible at rest. Full accent border on focus — the border does all the work.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Veronica, deploy coding mode.\" />",
+      "css": ".ds-input{background:rgba(0,0,0,0.3);color:#eefbff;border:1px solid rgba(56,232,255,0.2);border-radius:8px;padding:10px 12px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.875rem;outline:none;width:100%;transition:border-color 0.2s ease-out}.ds-input::placeholder{color:#475569}.ds-input:focus{border-color:#38e8ff}"
+    },
+    {
+      "name": "Tab Bar",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Horizontal navigation strip inside the ops panel. Active tab uses accent tint. Overflows horizontally on narrow viewports.",
+      "html": "<div class=\"ds-tab-bar\"><button class=\"ds-tab ds-tab-active\">Ops</button><button class=\"ds-tab\">Habits</button><button class=\"ds-tab\">Mail</button><button class=\"ds-tab\">Journal</button></div>",
+      "css": ".ds-tab-bar{display:flex;gap:4px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:4px;overflow-x:auto}.ds-tab{flex-shrink:0;background:transparent;color:#64748b;border:none;border-radius:6px;padding:6px 12px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;transition:color 0.15s ease-out}.ds-tab:hover{color:#94a3b8}.ds-tab.ds-tab-active{background:rgba(56,232,255,0.2);border:1px solid rgba(56,232,255,0.3);color:#d6f7ff}"
+    },
+    {
+      "name": "Mode Selector",
+      "kind": "nav",
+      "refersTo": "hud-panel",
+      "description": "Four personality buttons. Active state drives the entire UI color mode and pulses with reactor-pulse.",
+      "html": "<div class=\"ds-mode-grid\"><button class=\"ds-mode-btn ds-mode-active\"><span class=\"ds-mode-name\">JARVIS</span><span class=\"ds-mode-detail\">General intelligence</span></button><button class=\"ds-mode-btn\"><span class=\"ds-mode-name\">FRIDAY</span><span class=\"ds-mode-detail\">Productivity control</span></button></div>",
+      "css": ".ds-mode-grid{display:flex;flex-direction:column;gap:8px}@keyframes reactor-pulse{0%,100%{box-shadow:0 0 10px rgba(56,232,255,0.22)}50%{box-shadow:0 0 22px rgba(56,232,255,0.45)}}.ds-mode-btn{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px;text-align:left;cursor:pointer;transition:border-color 0.2s ease-out,background 0.2s ease-out}.ds-mode-btn:hover{border-color:rgba(56,232,255,0.5)}.ds-mode-btn.ds-mode-active{border-color:#38e8ff;background:rgba(56,232,255,0.12);animation:reactor-pulse 2.4s ease-in-out infinite}.ds-mode-name{display:block;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.875rem;font-weight:600;color:#eefbff}.ds-mode-detail{display:block;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.75rem;color:#64748b;margin-top:2px}"
+    },
+    {
+      "name": "Chat Bubbles",
+      "kind": "card",
+      "refersTo": "hud-panel",
+      "description": "VERONICA replies in accent tint. COMMANDER messages in plasma-alert tint, right-aligned by margin.",
+      "html": "<div class=\"ds-chat\"><div class=\"ds-msg-assistant\"><p class=\"ds-msg-role\">VERONICA</p><p>Reactor online. All systems armed.</p></div><div class=\"ds-msg-user\"><p class=\"ds-msg-role\">COMMANDER</p><p>Run diagnostics.</p></div></div>",
+      "css": ".ds-chat{display:flex;flex-direction:column;gap:12px}.ds-msg-assistant,.ds-msg-user{border-radius:8px;border:1px solid;padding:12px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:0.875rem;line-height:1.6;word-break:break-words;min-width:0}.ds-msg-assistant{border-color:rgba(56,232,255,0.2);background:rgba(56,232,255,0.06);color:#d6f7ff}.ds-msg-user{margin-left:auto;max-width:90%;border-color:rgba(255,63,129,0.2);background:rgba(255,64,129,0.07);color:#fff0f6}.ds-msg-role{font-size:0.6875rem;letter-spacing:0.18em;text-transform:uppercase;color:#475569;margin-bottom:4px;font-family:'Space Grotesk',system-ui,sans-serif}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Reactor Core",
+    "overview": "VERONICA is hardened kit that happens to be beautiful. Every surface is a control surface. Every glow is functional heat. The interface does not perform futurism — it performs readiness. One operator, one command center, every signal visible at a glance. The aesthetic emerges from purpose: the glow exists because the system is live, not because the designer wanted it to feel futuristic.\n\nThe system runs in four modal states — JARVIS (arc-light cyan), FRIDAY (ambercore gold), VERONICA (soft purple), SENTINEL (plasma red) — each representing a distinct cognitive posture. Color is mode signal. The accent at any given moment tells the operator which version of the AI they are addressing and what kind of work they are doing.\n\nSpace Grotesk keeps text sharp and legible on dark backgrounds without veering clinical. JetBrains Mono anchors terminal-adjacent surfaces. The pairing reads as precision instrument, not developer tool.",
+    "keyCharacteristics": [
+      "Dark-first: optimized for a single operator at a monitor in low ambient light",
+      "Functional glow: arc-light appears only on active, interactive, or live elements",
+      "Four-mode personality: accent shifts with cognitive mode; everything else stays constant",
+      "Kinetic precision: motion confirms state changes, it does not choreograph entrances",
+      "No hierarchy confusion: scale and weight contrast are the only hierarchy tools"
+    ],
+    "rules": [
+      { "name": "The Mode Signal Rule",       "body": "The active modal accent must appear on at most 10% of the screen surface at any time. Its rarity is what makes it readable as a signal.", "section": "colors" },
+      { "name": "The One Danger Color Rule",  "body": "Plasma Alert (#ff3f81) is reserved strictly for error states, destructive confirmations, and threat alerts. Never decorative.", "section": "colors" },
+      { "name": "The UPPERCASE Label Rule",   "body": "Labels identifying system state, mode, or category are set in uppercase with letter-spacing: 0.18em. Human-authored content never gets this treatment.", "section": "typography" },
+      { "name": "The Mono Quarantine Rule",   "body": "JetBrains Mono is reserved for machine-generated technical content: code, IDs, latency values, terminal strings. Never for flavor text or timestamps.", "section": "typography" },
+      { "name": "The Flat Interior Rule",     "body": "Inside a .hud-panel, there is no elevation. Elements within a panel use only background tints and hairline borders. Nested glow compounds into visual noise.", "section": "elevation" },
+      { "name": "The No Layered Shadow Rule", "body": "Never stack multiple box-shadows to simulate material depth. The only shadows in this system are zero-offset radial blooms.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do let the modal accent do the elevation work — if an element is live or active, the accent border signals it",
+      "Do use uppercase + tracking (0.18em) for all system-generated labels only",
+      "Do keep glow at the panel perimeter only — the interior of every .hud-panel is flat",
+      "Do add break-words min-w-0 to any text inside a flex container",
+      "Do add shrink-0 to timestamps, dates, and icon buttons in flex rows",
+      "Do use ease-out (0.2s–0.4s) for all state transitions"
+    ],
+    "donts": [
+      "Don't use gradient text (background-clip: text with a gradient fill)",
+      "Don't add glassmorphism decoratively — backdrop-filter is structural on .hud-panel only",
+      "Don't use border-left greater than 1px as a colored accent stripe on cards or list items",
+      "Don't nest .hud-panel inside .hud-panel",
+      "Don't build gradient hero metrics: big number, small label, gradient accent bar",
+      "Don't apply the modal accent to static non-interactive elements at rest",
+      "Don't use JetBrains Mono for flavor text, timestamps, or decorative copy",
+      "Don't make it feel like a 2024 AI SaaS product: no purple gradient hero sections, no glassmorphism sidebar, no onboarding toasts"
+    ]
+  }
+}

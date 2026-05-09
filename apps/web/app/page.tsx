@@ -449,7 +449,7 @@ export default function Home() {
                   <p className="mb-1 text-xs uppercase tracking-[0.18em] text-slate-400">
                     {message.role === "assistant" ? "VERONICA" : "COMMANDER"}
                   </p>
-                  <div className="space-y-0.5 text-sm">{renderMarkdown(message.content)}</div>
+                  <div className="space-y-0.5 text-sm break-words min-w-0">{renderMarkdown(message.content)}</div>
                   {message.streaming && index === messages.length - 1 ? (
                     <span
                       className="inline-block w-0.5 h-4 ml-0.5 align-middle animate-pulse"
@@ -715,7 +715,7 @@ function RightPanelContent({
             <button
               key={task}
               onClick={() => void sendMessage(`Veronica, ${task.toLowerCase()}.`)}
-              className="w-full rounded-lg border border-white/10 bg-white/[0.03] p-3 text-left text-sm text-slate-200 transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent)]/[0.07]"
+              className="w-full rounded-lg border border-white/10 bg-white/[0.03] p-3 text-left text-sm text-slate-200 transition hover:border-[var(--accent)]/40 hover:bg-[var(--accent)]/[0.07] break-words"
             >
               {task}
             </button>
@@ -741,7 +741,7 @@ function RightPanelContent({
         </p>
         <div className="space-y-2">
           {notifications.map((notification, index) => (
-            <div key={`${notification}-${index}`} className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-slate-300">
+            <div key={`${notification}-${index}`} className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-slate-300 break-words">
               {notification}
             </div>
           ))}

@@ -26,13 +26,21 @@ async function apiFetch<T>(path: string): Promise<T> {
   return res.json();
 }
 
+function cleanId(raw: string | null | undefined, fallback = "Unknown"): string {
+  if (!raw) return fallback;
+  const stripped = raw.replace(/@(lid|c\.us|s\.whatsapp\.net)$/i, "");
+  // pure digit string → phone number
+  if (/^\d{7,15}$/.test(stripped)) return `+${stripped}`;
+  return stripped;
+}
+
 // Group messages by the other party (contact name for received, toName for sent)
 function groupByContact(msgs: WAMessage[]): Map<string, WAMessage[]> {
   const map = new Map<string, WAMessage[]>();
   for (const m of msgs) {
     const key = m.fromMe
-      ? (m.toName || m.to || "Sent")
-      : (m.fromName || m.from);
+      ? cleanId(m.toName || m.to, "Sent")
+      : cleanId(m.fromName || m.from);
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(m);
   }
@@ -248,10 +256,10 @@ export function WhatsAppPanel() {
                         {m.fromMe && (
                           <span className="text-[10px] text-slate-500 flex-shrink-0 mt-0.5">You</span>
                         )}
-                        <p className={`text-sm truncate flex-1 ${m.fromMe ? "text-right text-slate-400" : "text-slate-300"}`}>
+                        <p className={`text-sm break-words min-w-0 flex-1 ${m.fromMe ? "text-right text-slate-400" : "text-slate-300"}`}>
                           {m.body}
                         </p>
-                        <span className="text-xs text-slate-500 flex-shrink-0">{formatTime(m.timestamp)}</span>
+                        <span className="text-xs text-slate-500 flex-shrink-0 mt-0.5">{formatTime(m.timestamp)}</span>
                       </div>
                     ))}
                   </div>
