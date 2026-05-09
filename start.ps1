@@ -15,25 +15,27 @@ function Write-Fail($msg) { Write-Host "  ERR $msg" -ForegroundColor Red }
 
 # -- Verify prerequisites --------------------------------------------------
 
-$pythonCmd = $null
-foreach ($c in @("python", "python3")) {
-    if (Get-Command $c -ErrorAction SilentlyContinue) {
-        $pythonCmd = $c
-        break
+function Find-RealPython {
+    foreach ($c in @("python", "python3")) {
+        if (Get-Command $c -ErrorAction SilentlyContinue) {
+            # Run --version to reject the Windows Store stub (it exits non-zero and prints nothing useful)
+            $ver = & $c --version 2>&1
+            if ($LASTEXITCODE -eq 0 -and "$ver" -match "Python 3") {
+                return $c
+            }
+        }
     }
+    return $null
 }
+
+$pythonCmd = Find-RealPython
 if (-not $pythonCmd) {
     Write-Warn "Python not found -- attempting automatic install via winget..."
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         winget install --id Python.Python.3.12 -e --silent --accept-source-agreements --accept-package-agreements
         # Refresh PATH so the new Python is visible in this session
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        foreach ($c in @("python", "python3")) {
-            if (Get-Command $c -ErrorAction SilentlyContinue) {
-                $pythonCmd = $c
-                break
-            }
-        }
+        $pythonCmd = Find-RealPython
         if ($pythonCmd) {
             Write-OK "Python installed successfully"
         }
@@ -41,7 +43,7 @@ if (-not $pythonCmd) {
         Write-Warn "winget not available on this machine."
     }
     if (-not $pythonCmd) {
-        Write-Fail "Python install failed. Download Python 3.12 from https://python.org, run the installer, then re-run this script."
+        Write-Fail "Python install failed. Download Python 3.12 from https://python.org, run the installer (check 'Add to PATH'), then re-run this script."
         exit 1
     }
 }
