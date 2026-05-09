@@ -16,12 +16,29 @@ function Write-Fail($msg) { Write-Host "  ERR $msg" -ForegroundColor Red }
 # -- Verify prerequisites --------------------------------------------------
 
 function Find-RealPython {
-    foreach ($c in @("python", "python3")) {
+    # "py" is the Windows Python Launcher — installed to C:\Windows\ by winget/installer,
+    # always wins over the Microsoft Store stub, most reliable on fresh Windows machines.
+    foreach ($c in @("py", "python", "python3")) {
         if (Get-Command $c -ErrorAction SilentlyContinue) {
-            # Run --version to reject the Windows Store stub (it exits non-zero and prints nothing useful)
             $ver = & $c --version 2>&1
             if ($LASTEXITCODE -eq 0 -and "$ver" -match "Python 3") {
                 return $c
+            }
+        }
+    }
+    # Fallback: check known install paths directly (winget silent install, no PATH update)
+    $knownPaths = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "C:\Python312\python.exe",
+        "C:\Python311\python.exe"
+    )
+    foreach ($p in $knownPaths) {
+        if (Test-Path $p) {
+            $ver = & $p --version 2>&1
+            if ($LASTEXITCODE -eq 0 -and "$ver" -match "Python 3") {
+                return $p
             }
         }
     }
