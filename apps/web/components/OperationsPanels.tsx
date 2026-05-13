@@ -1,7 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, Check, CheckSquare, Flame, Globe, NotebookPen, TimerReset, X } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Activity, BookOpen, Check, Newspaper, Settings, Target, X,
+} from "lucide-react";
+import {
+  SiGithub, SiGmail, SiGooglecalendar, SiSpotify, SiWhatsapp,
+} from "react-icons/si";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { CalendarPanel } from "@/components/CalendarPanel";
 import { EmailPanel } from "@/components/EmailPanel";
@@ -28,18 +33,30 @@ async function api<T>(path: string, opts?: RequestInit): Promise<T> {
 
 type Tab = "operations" | "habits" | "news" | "email" | "calendar" | "activity" | "github" | "spotify" | "whatsapp" | "journal";
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "operations", label: "Ops" },
-  { id: "habits",     label: "Habits" },
-  { id: "news",       label: "News" },
-  { id: "email",      label: "Mail" },
-  { id: "calendar",   label: "Calendar" },
-  { id: "activity",   label: "Activity" },
-  { id: "github",     label: "GitHub" },
-  { id: "spotify",    label: "Spotify" },
-  { id: "whatsapp",   label: "WhatsApp" },
-  { id: "journal",    label: "Journal" },
+type TabDef = { id: Tab; label: string; short: string; icon: React.ReactNode };
+
+const TABS: TabDef[] = [
+  { id: "operations", label: "Operations", short: "OPS",  icon: <Settings   size={13} /> },
+  { id: "habits",     label: "Habits",     short: "HBT",  icon: <Target     size={13} /> },
+  { id: "news",       label: "News",       short: "NWS",  icon: <Newspaper  size={13} /> },
+  { id: "email",      label: "Mail",       short: "MAIL", icon: <SiGmail    size={13} /> },
+  { id: "calendar",   label: "Calendar",   short: "CAL",  icon: <SiGooglecalendar size={13} /> },
+  { id: "activity",   label: "Activity",   short: "ACT",  icon: <Activity   size={13} /> },
+  { id: "github",     label: "GitHub",     short: "GH",   icon: <SiGithub   size={13} /> },
+  { id: "spotify",    label: "Spotify",    short: "SPT",  icon: <SiSpotify  size={13} /> },
+  { id: "whatsapp",   label: "WhatsApp",   short: "WA",   icon: <SiWhatsapp size={13} /> },
+  { id: "journal",    label: "Journal",    short: "LOG",  icon: <BookOpen   size={13} /> },
 ];
+
+/* ── Priority badge ──────────────────────────────────────── */
+function PriBadge({ pri }: { pri: string }) {
+  const cls =
+    pri === "high"   ? "tool-pill crit" :
+    pri === "medium" ? "tool-pill warn" :
+    "tool-pill";
+  const label = pri === "high" ? "P1" : pri === "medium" ? "P2" : "P3";
+  return <span className={cls}>{label}</span>;
+}
 
 export function OperationsPanels() {
   const [activeTab, setActiveTab] = useState<Tab>("operations");
@@ -51,10 +68,10 @@ export function OperationsPanels() {
   const [news, setNews]           = useState<NewsDigest | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
 
-  const [taskInput, setTaskInput]       = useState("");
-  const [noteInput, setNoteInput]       = useState("");
+  const [taskInput, setTaskInput]         = useState("");
+  const [noteInput, setNoteInput]         = useState("");
   const [reminderInput, setReminderInput] = useState("");
-  const [habitInput, setHabitInput]     = useState("");
+  const [habitInput, setHabitInput]       = useState("");
 
   const [busy, setBusy]   = useState<null | "task" | "note" | "reminder" | "habit">(null);
   const [error, setError] = useState<string | null>(null);
@@ -125,12 +142,12 @@ export function OperationsPanels() {
     return () => window.clearInterval(iv);
   }, [reminders]);
 
-  const post = (path: string, body: object) =>
-    fetch(`${API_URL}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-
-  const del = (path: string) => fetch(`${API_URL}${path}`, { method: "DELETE" });
+  const post  = (path: string, body: object) =>
+    fetch(`${API_URL}${path}`, { method: "POST",  headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const del   = (path: string) =>
+    fetch(`${API_URL}${path}`, { method: "DELETE" });
   const patch = (path: string, body: object) =>
-    fetch(`${API_URL}${path}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    fetch(`${API_URL}${path}`, { method: "PATCH",  headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   async function createTask() {
     const t = taskInput.trim(); if (!t) return;
@@ -138,108 +155,132 @@ export function OperationsPanels() {
     try { await post("/tasks", { description: t, priority: "medium" }); setTaskInput(""); await refreshOps(); }
     catch { setError("Failed to create task."); } finally { setBusy(null); }
   }
-
   async function createNote() {
     const t = noteInput.trim(); if (!t) return;
     setBusy("note");
     try { await post("/notes", { content: t }); setNoteInput(""); await refreshOps(); }
     catch { setError("Failed to save note."); } finally { setBusy(null); }
   }
-
   async function createReminder() {
     const t = reminderInput.trim(); if (!t) return;
     setBusy("reminder");
     try { await post("/reminders", { content: t }); setReminderInput(""); await refreshOps(); }
     catch { setError("Failed to set reminder."); } finally { setBusy(null); }
   }
-
   async function createHabit() {
     const t = habitInput.trim(); if (!t) return;
     setBusy("habit");
     try { await post("/habits", { name: t }); setHabitInput(""); await refreshHabits(); }
     catch { setError("Failed to add habit."); } finally { setBusy(null); }
   }
-
   async function logHabit(id: number) {
     try { await post(`/habits/${id}/log`, {}); await refreshHabits(); }
     catch { setError("Failed to log habit."); }
   }
 
-  const btn = "rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-1 text-xs text-[var(--accent-text)] hover:bg-[var(--accent)]/20 transition";
-  const btnDanger = "rounded-lg border border-pink-300/30 px-2 py-1 text-xs text-pink-200 hover:bg-pink-400/10 transition";
-  const input = "min-w-0 flex-1 rounded-lg border border-[var(--accent)]/20 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[var(--accent-strong)]";
+  const activeLabel = TABS.find((t) => t.id === activeTab)?.label ?? "";
 
   return (
-    <div className="space-y-4">
-      {/* Tab bar */}
-      <div className="flex gap-1 rounded-lg border border-white/10 bg-black/30 p-1 overflow-x-auto">
-        {TABS.map((tab) => (
+    <div className="hud-panel rounded-lg overflow-hidden">
+      {/* ── Panel header ─────────────────────────────────── */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--accent)]/15">
+        <span className="text-[10px] font-mono uppercase tracking-[0.18em]" style={{ color: "var(--accent-text)" }}>
+          🛠️ Tool Surfaces · {activeLabel}
+        </span>
+        <span className="text-[9px] font-mono tracking-[0.15em] text-slate-600">
+          {TABS.length} tools
+        </span>
+      </div>
+
+      {/* ── Tab rail ─────────────────────────────────────── */}
+      <div className="tools-rail" role="tablist">
+        {TABS.map((t) => (
           <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex-shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-              activeTab === tab.id
-                ? "bg-[var(--accent)]/20 text-[var(--accent-text)] border border-[var(--accent)]/30"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
+            key={t.id}
+            role="tab"
+            aria-selected={activeTab === t.id}
+            className={`tools-tab ${activeTab === t.id ? "active" : ""}`}
+            onClick={() => setActiveTab(t.id)}
+            title={t.label}
           >
-            {tab.label}
+            <span className="tools-glyph">{t.icon}</span>
+            <span className="tools-tablabel">{t.short}</span>
           </button>
         ))}
       </div>
 
+      {/* ── Error banner ─────────────────────────────────── */}
       {error && (
-        <div className="flex items-center justify-between rounded-lg border border-pink-300/40 bg-pink-400/10 px-4 py-2 text-sm text-pink-200">
+        <div className="mx-4 mt-3 flex items-center justify-between rounded border border-pink-300/30 bg-pink-400/8 px-3 py-2 text-xs text-pink-300">
           <span>{error}</span>
-          <button onClick={() => setError(null)} className="ml-4 text-xs text-pink-300">Dismiss</button>
+          <button onClick={() => setError(null)} className="text-pink-400 hover:text-pink-200 transition ml-3">
+            <X size={10} />
+          </button>
         </div>
       )}
 
-      {activeTab === "email"    && <EmailPanel />}
-      {activeTab === "calendar" && <CalendarPanel />}
-      {activeTab === "activity" && <ActivityPanel />}
-      {activeTab === "github"   && <GitHubPanel />}
-      {activeTab === "spotify"  && <SpotifyPanel />}
-      {activeTab === "whatsapp" && <WhatsAppPanel />}
-      {activeTab === "journal"  && <JournalPanel />}
+      {/* ── Delegated panels ─────────────────────────────── */}
+      <div className="p-4">
+        {activeTab === "email"    && <EmailPanel />}
+        {activeTab === "calendar" && <CalendarPanel />}
+        {activeTab === "activity" && <ActivityPanel />}
+        {activeTab === "github"   && <GitHubPanel />}
+        {activeTab === "spotify"  && <SpotifyPanel />}
+        {activeTab === "whatsapp" && <WhatsAppPanel />}
+        {activeTab === "journal"  && <JournalPanel />}
+      </div>
 
-      {/* ── HABITS TAB ──────────────────────────────────────── */}
+      {/* ── Habits ───────────────────────────────────────── */}
       {activeTab === "habits" && (
-        <div className="hud-panel rounded-lg p-4">
-          <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-            <Flame size={16} /> Habit Tracker
-          </p>
-          <div className="flex gap-2 mb-4">
-            <input value={habitInput} onChange={(e) => setHabitInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void createHabit()}
-              placeholder="New habit name" className={input} />
-            <button onClick={() => void createHabit()} disabled={busy === "habit"}
-              className={`${btn} px-4 py-2 disabled:opacity-50`}>Add</button>
+        <div>
+          <div className="tool-header">
+            <div>
+              <div className="tool-title">🎯 Habit Tracker</div>
+              <div className="tool-sub">{habits.filter((h) => h.done_today).length}/{habits.length} today · habit_status</div>
+            </div>
+            <button
+              onClick={() => void createHabit()}
+              disabled={busy === "habit"}
+              className="tool-action"
+            >
+              + Add
+            </button>
           </div>
+
+          <div className="px-3 pb-2 pt-1">
+            <input
+              value={habitInput}
+              onChange={(e) => setHabitInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void createHabit()}
+              placeholder="new habit name"
+              className="tool-input"
+            />
+          </div>
+
           {habits.length === 0 ? (
-            <p className="text-sm text-slate-400">No habits yet. Add your first one above.</p>
+            <div className="tool-empty">No habits yet. Add your first one above.</div>
           ) : (
-            <div className="space-y-2">
+            <div className="tool-list">
               {habits.map((h) => (
-                <div key={h.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 p-3">
-                  <div className="flex items-center gap-3">
-                    <div className="h-3 w-3 rounded-full flex-shrink-0" style={{ background: h.color }} />
-                    <div>
-                      <p className={`text-sm font-medium ${h.done_today ? "line-through text-slate-400" : "text-slate-100"}`}>{h.name}</p>
-                      <p className="text-xs text-slate-500">
-                        {h.streak > 0 ? `${h.streak}-day streak` : "No streak yet"}
-                        {" · "}{h.frequency}
-                      </p>
+                <div key={h.id} className="habit-row">
+                  <button
+                    onClick={() => void logHabit(h.id)}
+                    disabled={h.done_today}
+                    className={`habit-tick ${h.done_today ? "done" : ""}`}
+                    aria-label={`Log ${h.name}`}
+                  >
+                    {h.done_today ? <Check size={9} /> : ""}
+                  </button>
+                  <div className="habit-body">
+                    <div className={`habit-name ${h.done_today ? "line-through opacity-50" : ""}`}>{h.name}</div>
+                    <div className="habit-meta">
+                      {h.streak > 0 ? `${h.streak}-day streak` : "no streak"} · {h.frequency}
                     </div>
                   </div>
-                  <button onClick={() => void logHabit(h.id)} disabled={h.done_today}
-                    className={`text-xs px-3 py-1 rounded-lg border transition ${
-                      h.done_today
-                        ? "border-emerald-400/40 text-emerald-300 bg-emerald-400/10 cursor-default"
-                        : "border-[var(--accent)]/30 text-[var(--accent-text)] hover:bg-[var(--accent)]/20"
-                    }`}>
-                    {h.done_today ? <><Check size={10} className="inline mr-1" />Done</> : "Mark done"}
-                  </button>
+                  <div
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    style={{ background: h.color, opacity: 0.8 }}
+                  />
                 </div>
               ))}
             </div>
@@ -247,21 +288,25 @@ export function OperationsPanels() {
         </div>
       )}
 
-      {/* ── NEWS TAB ────────────────────────────────────────── */}
+      {/* ── News ─────────────────────────────────────────── */}
       {activeTab === "news" && (
-        <div className="hud-panel rounded-lg p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <Globe size={16} /> News Digest
-            </p>
-            <button onClick={() => void loadNews()} disabled={newsLoading} className={`${btn} disabled:opacity-50`}>
-              {newsLoading ? "Fetching..." : "Refresh"}
+        <div>
+          <div className="tool-header">
+            <div>
+              <div className="tool-title">📰 News Digest</div>
+              <div className="tool-sub">
+                {news ? `${news.total} articles · ${new Date(news.fetched_at).toLocaleTimeString()}` : "click refresh to load"}
+              </div>
+            </div>
+            <button onClick={() => void loadNews()} disabled={newsLoading} className="tool-action">
+              {newsLoading ? "…" : "Refresh"}
             </button>
           </div>
-          {newsLoading && <p className="text-sm text-slate-400 py-4 text-center">Fetching latest headlines…</p>}
-          {!newsLoading && !news && <p className="text-sm text-slate-400">Click Refresh to load news.</p>}
+
+          {newsLoading && <div className="tool-empty">Fetching headlines…</div>}
+          {!newsLoading && !news && <div className="tool-empty">No digest loaded.</div>}
+
           {news && (() => {
-            // Group flat article list by feed_title
             const grouped = new Map<string, Article[]>();
             for (const a of news.feeds) {
               const key = a.feed_title ?? "General";
@@ -269,20 +314,25 @@ export function OperationsPanels() {
               grouped.get(key)!.push(a);
             }
             return (
-              <div className="space-y-4">
-                <p className="text-xs text-slate-500">{news.total} articles · {new Date(news.fetched_at).toLocaleTimeString()}</p>
+              <div className="tool-list">
                 {Array.from(grouped.entries()).map(([feedTitle, articles], fi) => (
                   <div key={fi}>
-                    <p className="text-xs uppercase tracking-[0.18em] text-slate-400 mb-2">{feedTitle}</p>
-                    <div className="space-y-2">
-                      {articles.slice(0, 3).map((a, ai) => (
-                        <a key={ai} href={a.link} target="_blank" rel="noopener noreferrer"
-                          className="block rounded-lg border border-white/10 bg-black/20 p-3 hover:border-[var(--accent)]/30 transition">
-                          <p className="text-sm text-slate-100 leading-snug">{a.title}</p>
-                          {a.summary && <p className="text-xs text-slate-400 mt-1 line-clamp-2">{a.summary}</p>}
-                        </a>
-                      ))}
-                    </div>
+                    <div className="divlabel-sm">{feedTitle}</div>
+                    {articles.slice(0, 3).map((a, ai) => (
+                      <a
+                        key={ai}
+                        href={a.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="tool-row clickable block"
+                      >
+                        <div className="tool-row-main">
+                          <div className="tool-row-left text-slate-200 text-xs">{a.title}</div>
+                          {a.summary && <div className="tool-row-sub">{a.summary}</div>}
+                        </div>
+                        <span className="tool-row-meta shrink-0">→</span>
+                      </a>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -291,124 +341,231 @@ export function OperationsPanels() {
         </div>
       )}
 
-      {/* ── OPERATIONS TAB ──────────────────────────────────── */}
+      {/* ── Operations (2×2 grid) ────────────────────────── */}
       {activeTab === "operations" && (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid gap-3 p-3 xl:grid-cols-2">
+
           {/* Daily Briefing */}
-          <section className="hud-panel rounded-lg p-4">
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <CalendarClock size={16} /> Daily Briefing
-            </p>
-            <p className="text-sm text-slate-300">{briefing?.summary ?? "Loading briefing…"}</p>
-            <p className="mt-3 rounded-lg border border-[var(--accent)]/20 bg-[var(--accent)]/[0.05] p-3 text-sm text-slate-100">
-              {briefing?.focus_recommendation ?? "Stand by while I assemble the day."}
-            </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <section className="rounded-lg border border-white/[0.07] bg-black/20 overflow-hidden">
+            <div className="tool-header">
               <div>
-                <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-400">Top Tasks</p>
-                <div className="space-y-2">
-                  {(briefing?.top_tasks ?? []).slice(0, 3).map((t) => (
-                    <div key={t.id} className="rounded-lg border border-white/10 bg-black/20 p-2 text-sm text-slate-200">{t.description}</div>
-                  ))}
+                <div className="tool-title">🗂️ Daily Briefing</div>
+                <div className="tool-sub">
+                  {briefing
+                    ? `${briefing.top_tasks.length} task(s) · ${briefing.reminders.length} reminder(s)`
+                    : "loading…"}
                 </div>
               </div>
-              <div>
-                <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-400">Reminders</p>
-                <div className="space-y-2">
-                  {(briefing?.reminders ?? []).slice(0, 3).map((r) => (
-                    <div key={r.id} className="rounded-lg border border-white/10 bg-black/20 p-2 text-sm text-slate-200">{r.content}</div>
+            </div>
+            <div className="px-3 pb-3 pt-2 space-y-2">
+              <p className="text-xs text-slate-300 leading-relaxed">
+                {briefing?.summary ?? "Assembling the day…"}
+              </p>
+              <p className="rounded border border-[var(--accent)]/15 bg-[var(--accent)]/[0.05] px-3 py-2 text-xs text-slate-200 leading-relaxed">
+                {briefing?.focus_recommendation ?? "Stand by."}
+              </p>
+              {(briefing?.top_tasks?.length ?? 0) > 0 && (
+                <>
+                  <div className="divlabel-sm" style={{ padding: "4px 0 2px" }}>Top Tasks</div>
+                  {briefing!.top_tasks.slice(0, 3).map((t) => (
+                    <div key={t.id} className="flex items-center gap-2 text-xs text-slate-300 py-0.5">
+                      <span className="text-[11px]">📌</span>
+                      <span className="truncate">{t.description}</span>
+                    </div>
                   ))}
-                </div>
-              </div>
+                </>
+              )}
+              {(briefing?.reminders?.length ?? 0) > 0 && (
+                <>
+                  <div className="divlabel-sm" style={{ padding: "4px 0 2px" }}>Reminders</div>
+                  {briefing!.reminders.slice(0, 2).map((r) => (
+                    <div key={r.id} className="flex items-center gap-2 text-xs text-slate-400 py-0.5">
+                      <span className="text-[11px]">🔔</span>
+                      <span className="truncate">{r.content}</span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </section>
 
-          {/* Tasks */}
-          <section className="hud-panel rounded-lg p-4">
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <CheckSquare size={16} /> Task Board
-            </p>
-            <div className="flex gap-2">
-              <input value={taskInput} onChange={(e) => setTaskInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void createTask()}
-                placeholder="Add task" className={input} />
-              <button onClick={() => void createTask()} disabled={busy === "task"}
-                className={`${btn} px-4 py-2 disabled:opacity-50`}>Add</button>
+          {/* Task Board */}
+          <section className="rounded-lg border border-white/[0.07] bg-black/20 overflow-hidden">
+            <div className="tool-header">
+              <div>
+                <div className="tool-title">✅ Task Board</div>
+                <div className="tool-sub">{pendingTasks.length} pending · task_list</div>
+              </div>
             </div>
-            <div className="mt-4 space-y-2">
+
+            <div className="tool-compose" style={{ borderTop: "none", paddingBottom: 0 }}>
+              <div className="flex gap-1.5">
+                <input
+                  value={taskInput}
+                  onChange={(e) => setTaskInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void createTask()}
+                  placeholder="add task"
+                  className="tool-input"
+                />
+                <button
+                  onClick={() => void createTask()}
+                  disabled={busy === "task"}
+                  className="tool-btn"
+                  style={{ whiteSpace: "nowrap" }}
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+
+            <div className="tool-list">
               {pendingTasks.slice(0, 6).map((t) => (
-                <div key={t.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
-                  <div>
-                    <p className="text-slate-100">{t.description}</p>
-                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{t.priority}</p>
+                <div key={t.id} className="habit-row">
+                  <button
+                    onClick={() => void patch(`/tasks/${t.id}`, { status: "done" }).then(refreshOps)}
+                    className="habit-tick"
+                    aria-label="Mark done"
+                  />
+                  <div className="habit-body">
+                    <div className="habit-name truncate">{t.description}</div>
+                    <div className="habit-meta">{t.priority} priority</div>
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => void patch(`/tasks/${t.id}`, { status: "done" }).then(refreshOps)} className={btn}>Done</button>
-                    <button onClick={() => void del(`/tasks/${t.id}`).then(refreshOps)} className={btnDanger}><X size={10} /></button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <PriBadge pri={t.priority} />
+                    <button
+                      onClick={() => void del(`/tasks/${t.id}`).then(refreshOps)}
+                      className="text-slate-600 hover:text-pink-300 transition ml-1"
+                    >
+                      <X size={9} />
+                    </button>
                   </div>
                 </div>
               ))}
+              {pendingTasks.length === 0 && (
+                <div className="tool-empty">No pending tasks.</div>
+              )}
             </div>
           </section>
 
           {/* Notes */}
-          <section className="hud-panel rounded-lg p-4">
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <NotebookPen size={16} /> Notes
-            </p>
-            <div className="flex gap-2">
-              <input value={noteInput} onChange={(e) => setNoteInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void createNote()}
-                placeholder="Store a note" className={input} />
-              <button onClick={() => void createNote()} disabled={busy === "note"}
-                className={`${btn} px-4 py-2 disabled:opacity-50`}>Save</button>
+          <section className="rounded-lg border border-white/[0.07] bg-black/20 overflow-hidden">
+            <div className="tool-header">
+              <div>
+                <div className="tool-title">📝 Notes</div>
+                <div className="tool-sub">{notes.length} saved · notes_store</div>
+              </div>
             </div>
-            <div className="mt-4 space-y-2">
+
+            <div className="tool-compose" style={{ borderTop: "none", paddingBottom: 0 }}>
+              <div className="flex gap-1.5">
+                <input
+                  value={noteInput}
+                  onChange={(e) => setNoteInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void createNote()}
+                  placeholder="store a note"
+                  className="tool-input"
+                />
+                <button
+                  onClick={() => void createNote()}
+                  disabled={busy === "note"}
+                  className="tool-btn"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+
+            <div className="tool-list">
               {notes.map((n) => (
-                <div key={n.id} className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-200">
-                  <span>{n.content}</span>
-                  <button onClick={() => void del(`/notes/${n.id}`).then(refreshOps)} className={btnDanger}><X size={10} /></button>
+                <div key={n.id} className="tool-row">
+                  <div className="tool-row-main">
+                    <div className="tool-row-left">
+                      <span className="text-[11px] shrink-0">📝</span>
+                      <span className="text-xs text-slate-200 break-words min-w-0">{n.content}</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => void del(`/notes/${n.id}`).then(refreshOps)}
+                    className="text-slate-600 hover:text-pink-300 transition shrink-0 ml-2"
+                  >
+                    <X size={9} />
+                  </button>
                 </div>
               ))}
+              {notes.length === 0 && <div className="tool-empty">No notes yet.</div>}
             </div>
           </section>
 
           {/* Reminders */}
-          <section className="hud-panel rounded-lg p-4">
-            <p className="mb-3 flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--accent-text)" }}>
-              <TimerReset size={16} /> Reminders
-            </p>
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-xs text-slate-400">
-                {notificationReady ? "Alerts armed" : "Enable browser alerts for timed reminders"}
-              </p>
+          <section className="rounded-lg border border-white/[0.07] bg-black/20 overflow-hidden">
+            <div className="tool-header">
+              <div>
+                <div className="tool-title">🔔 Reminders</div>
+                <div className="tool-sub">
+                  {notificationReady ? "alerts armed" : "enable browser alerts"}
+                </div>
+              </div>
               {!notificationReady && (
-                <button onClick={() => Notification.requestPermission().then((p) => setNotificationReady(p === "granted"))}
-                  className={btn}>Enable</button>
+                <button
+                  onClick={() => Notification.requestPermission().then((p) => setNotificationReady(p === "granted"))}
+                  className="tool-action"
+                >
+                  Enable
+                </button>
               )}
             </div>
-            <div className="flex gap-2">
-              <input value={reminderInput} onChange={(e) => setReminderInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void createReminder()}
-                placeholder="Set reminder" className={input} />
-              <button onClick={() => void createReminder()} disabled={busy === "reminder"}
-                className={`${btn} px-4 py-2 disabled:opacity-50`}>Set</button>
+
+            <div className="tool-compose" style={{ borderTop: "none", paddingBottom: 0 }}>
+              <div className="flex gap-1.5">
+                <input
+                  value={reminderInput}
+                  onChange={(e) => setReminderInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void createReminder()}
+                  placeholder="set reminder"
+                  className="tool-input"
+                />
+                <button
+                  onClick={() => void createReminder()}
+                  disabled={busy === "reminder"}
+                  className="tool-btn"
+                >
+                  Set
+                </button>
+              </div>
             </div>
-            <div className="mt-4 space-y-2">
+
+            <div className="tool-list">
               {reminders.map((r) => (
-                <div key={r.id} className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-200">
-                  <div>
-                    <span>{r.content}</span>
-                    {r.due_label && <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">{r.due_label}</p>}
+                <div key={r.id} className="tool-row">
+                  <div className="tool-row-main">
+                    <div className="tool-row-left">
+                      <span className="text-[11px] shrink-0">🔔</span>
+                      <span className="text-xs text-slate-200 break-words min-w-0">{r.content}</span>
+                    </div>
+                    {r.due_label && (
+                      <div className="tool-row-sub">{r.due_label}</div>
+                    )}
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => void patch(`/reminders/${r.id}`, { status: "done" }).then(refreshOps)} className={btn}>Done</button>
-                    <button onClick={() => void del(`/reminders/${r.id}`).then(refreshOps)} className={btnDanger}><X size={10} /></button>
+                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                    <button
+                      onClick={() => void patch(`/reminders/${r.id}`, { status: "done" }).then(refreshOps)}
+                      className="tool-pill ok cursor-pointer hover:bg-emerald-400/20 transition"
+                    >
+                      DONE
+                    </button>
+                    <button
+                      onClick={() => void del(`/reminders/${r.id}`).then(refreshOps)}
+                      className="text-slate-600 hover:text-pink-300 transition"
+                    >
+                      <X size={9} />
+                    </button>
                   </div>
                 </div>
               ))}
+              {reminders.length === 0 && <div className="tool-empty">No reminders set.</div>}
             </div>
           </section>
+
         </div>
       )}
     </div>
