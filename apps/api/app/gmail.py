@@ -20,12 +20,16 @@ def _get_service():
     try:
         from google.oauth2.credentials import Credentials  # type: ignore[import]
         from googleapiclient.discovery import build  # type: ignore[import]
-        from app.oauth_store import load_oauth_token
+        from app.oauth_store import load_oauth_token, save_oauth_token
 
         token_json = load_oauth_token("google")
         if not token_json:
             return None
         creds = Credentials.from_authorized_user_info(json.loads(token_json), GMAIL_SCOPES)
+        if creds.expired and creds.refresh_token:
+            from google.auth.transport.requests import Request  # type: ignore[import]
+            creds.refresh(Request())
+            save_oauth_token("google", creds.to_json())
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
     except Exception as exc:
         log.warning("Failed to build Gmail service: %s", exc)

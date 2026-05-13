@@ -5,6 +5,21 @@ import { useCallback, useEffect, useState } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+function decodeHtml(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+function cleanFrom(from: string): string {
+  const name = from.split("<")[0].trim().replace(/^["']+|["']+$/g, "");
+  return name || from;
+}
+
 type EmailItem = {
   id: string;
   from: string;
@@ -247,13 +262,13 @@ export function EmailPanel() {
         <div className="mb-3 rounded-lg border border-white/10 bg-black/20 p-3 min-w-0 overflow-hidden">
           <div className="mb-2 flex items-start justify-between gap-2 min-w-0">
             <p className="text-xs font-semibold text-slate-200 truncate min-w-0">
-              {emails.find((e) => e.id === selected)?.subject ?? "Email"}
+              {decodeHtml(emails.find((e) => e.id === selected)?.subject ?? "Email")}
             </p>
             <button onClick={() => { setSelected(null); setSelectedBody(null); }}>
               <X size={12} className="text-slate-400 hover:text-white shrink-0" />
             </button>
           </div>
-          <p className="text-xs text-slate-400 mb-2 truncate">{emails.find((e) => e.id === selected)?.from}</p>
+          <p className="text-xs text-slate-400 mb-2 truncate">{cleanFrom(emails.find((e) => e.id === selected)?.from ?? "")}</p>
           <pre className="text-xs text-slate-300 whitespace-pre-wrap break-words max-h-48 overflow-y-auto overflow-x-hidden">
             {selectedBody ?? "Loading..."}
           </pre>
@@ -288,14 +303,14 @@ export function EmailPanel() {
           >
             <div className="flex items-start justify-between gap-2 min-w-0">
               <p className={`text-xs font-semibold truncate min-w-0 ${email.unread ? "text-white" : "text-slate-300"}`}>
-                {email.from.split("<")[0].trim() || email.from}
+                {cleanFrom(email.from)}
               </p>
               <p className="text-[10px] text-slate-500 shrink-0">{email.date.split(",")[0]}</p>
             </div>
             <p className={`text-xs mt-0.5 truncate ${email.unread ? "text-slate-200" : "text-slate-400"}`}>
-              {email.subject}
+              {decodeHtml(email.subject)}
             </p>
-            <p className="text-[10px] text-slate-500 mt-0.5 truncate">{email.snippet}</p>
+            <p className="text-[10px] text-slate-500 mt-0.5 truncate">{decodeHtml(email.snippet)}</p>
           </button>
         ))}
       </div>

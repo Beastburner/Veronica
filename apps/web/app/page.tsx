@@ -477,7 +477,7 @@ export default function Home() {
             </form>
           </motion.div>
 
-          <motion.div {...(mounted ? fade(270) : {})}>
+          <motion.div {...(mounted ? fade(270) : {})} className="min-w-0 overflow-hidden">
             <ErrorBoundary name="OperationsPanels">
               <OperationsPanels />
             </ErrorBoundary>

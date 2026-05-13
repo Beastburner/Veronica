@@ -174,9 +174,23 @@ client.on("ready", () => {
   currentQR = null;
   console.log("[VERONICA] WhatsApp connected ✓");
 
-  // Load history in the background — doesn't block /status or /send
-  setImmediate(() => _loadHistoryBackground());
+  // Pre-warm both caches in the background — contacts first so searches work immediately
+  setImmediate(() => {
+    _warmContactsCache();
+    _loadHistoryBackground();
+  });
 });
+
+async function _warmContactsCache() {
+  try {
+    const contacts = await getCachedContacts();
+    console.log(`[VERONICA] Contacts cache ready: ${contacts.length} contacts`);
+    // Also pre-warm groups so group sends work on first try
+    await getCachedGroups();
+  } catch (err) {
+    console.warn("[VERONICA] Contacts pre-warm failed (non-fatal):", err.message);
+  }
+}
 
 async function _loadHistoryBackground() {
   try {

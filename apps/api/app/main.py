@@ -145,6 +145,9 @@ async def _resolve_wa_recipient(to: str) -> tuple[str, str, bool]:
     try:
         from app.whatsapp_client import wa_search_contact
         result = await wa_search_contact(to)
+        if result.get("ambiguous"):
+            # Multiple similar contacts — surface error so caller shows disambiguation prompt
+            return (result.get("error", "Multiple contacts match"), "__ambiguous__", False)
         if result.get("ok"):
             contact = result["contact"]
             name = contact.get("name", to)
@@ -320,9 +323,21 @@ CONTEXT_WINDOWS: OrderedDict[str, BoundedContextWindow] = OrderedDict()
 MAX_SESSIONS = 200
 MONITOR = MemoryMonitor(warning_mb=400, critical_mb=800)
 
+# "send this/above/that [whatsapp] message to Dev [on whatsapp]"
+_SEND_CONTEXT_RE = re.compile(
+    r"(?:send|forward|share|whatsapp)\s+"
+    r"(?:(?:the|my)\s+)?(?:above|this|that|last|previous|it)\s*"
+    r"(?:(?:whatsapp|wa|text)\s+)?(?:message|msg|text)?\s+"  # allow "whatsapp message"
+    r"(?:to|to\s+(?:him|her|them)\s+on\s+(?:whatsapp|wa)|on\s+(?:whatsapp|wa)\s+to|via\s+(?:whatsapp|wa)\s+to)\s*"
+    r"(.+?)(?:\s+(?:on|via)\s+(?:whatsapp|wa))?$",
+    re.IGNORECASE,
+)
+
 _CONFIRM_RE = re.compile(
     r"^\s*(yes|yep|yeah|sure|ok|okay|go\s*ahead|send\s*it|send\s*this|"
-    r"send|confirm|do\s*it|proceed|absolutely)\s*[.!?,]*\s*$",
+    r"send|confirm|do\s*it|proceed|absolutely|"
+    r"send\s+the\s+reply|use\s+(?:that|this)\s+reply|"
+    r"reply\s+(?:with\s+that|with\s+this|on\s+(?:the|his|her|their)\s+reply))\s*[.!?,]*\s*$",
     re.IGNORECASE,
 )
 _CANCEL_RE = re.compile(
@@ -330,6 +345,97 @@ _CANCEL_RE = re.compile(
     r"stop|never\s*mind|discard|skip)\s*[.!?,]*\s*$",
     re.IGNORECASE,
 )
+
+
+def _resolve_send_context(message: str, window: "BoundedContextWindow"):
+    """
+    If the user says 'send this/above message to X on WhatsApp', resolve 'this/above'
+    from the conversation window and return a ready whatsapp_send IntentResult.
+    Returns None if the message doesn't match or there's no prior content to send.
+    """
+    m = _SEND_CONTEXT_RE.match(message.strip())
+    if not m:
+        return None
+    recipient = m.group(1).strip().rstrip(".!?,")
+    if not recipient:
+        return None
+
+    # window already has the current message appended as the last entry.
+    # "this" = the message immediately before the current command — could be
+    # the assistant's last answer (user wants to forward VERONICA's response)
+    # or the user's own previous message (user composed something to send).
+    all_msgs = window.get_context_messages()
+    # all_msgs[-1] is the current "send this" command; [-2] is the prior turn
+    prior_text = all_msgs[-2]["content"] if len(all_msgs) >= 2 else None
+
+    if not prior_text:
+        return None
+
+    from app.intent_router import IntentResult
+    return IntentResult("tool", {
+        "tool": "whatsapp_send",
+        "args": {"to": recipient, "text": prior_text},
+        "confirm_first": True,
+    })
+
+
+# Detects "remember it/this/that", "save this", "store that", "note this down", etc.
+# but NOT when the user has clearly stated the content inline ("remember that X is Y")
+_REMEMBER_CONTEXT_RE = re.compile(
+    r"(?:^|\s)"
+    r"(?:remember|memorize|save|store|note\s+(?:this|that|it)|keep\s+(?:this|that|it)\s+in\s+(?:memory|mind))\s+"
+    r"(?:(?:this|it|that)\s*(?:down|away|in\s+(?:memory|mind))?)"
+    r"\s*[.!?,]*$"
+    r"|"
+    r"(?:^|\.\s*)(?:remember|save|store)\s+(?:this|it|that)\s*[.!?,]*$",
+    re.IGNORECASE,
+)
+
+
+def _resolve_memory_context(message: str, window: "BoundedContextWindow"):
+    """
+    When the user says 'remember it/this/that' — resolve 'it/this/that' from the
+    conversation window and use the LLM to write a proper memory entry.
+    Returns an IntentResult(write) or None.
+    """
+    if not _REMEMBER_CONTEXT_RE.search(message.strip()):
+        return None
+
+    all_msgs = window.get_context_messages()
+    # Build a short conversation snippet for context (last 6 turns, exclude current msg)
+    prior_msgs = [m for m in all_msgs if m["role"] in ("user", "assistant")]
+    # The current user message is the last one; exclude it from context
+    prior_msgs = prior_msgs[:-1]
+    if not prior_msgs:
+        return None
+
+    context_lines = "\n".join(
+        f"{'User' if m['role'] == 'user' else 'VERONICA'}: {m['content']}"
+        for m in prior_msgs[-6:]
+    )
+
+    from app.llm_client import call_json
+    schema = (
+        'The user said: "{msg}". They want to save something to long-term memory. '
+        'Based on the conversation below, determine exactly what fact to remember. '
+        'Resolve any pronouns (it/this/that) to their actual referents. '
+        'Schema: {{"content": string}}. '
+        'Write a clear, specific, standalone sentence — not a meta-phrase like "it is a trendy meme". '
+        'Example good memory: "The \'Jarvis more alcohol\' meme is a popular trending meme." '
+        'If the content is genuinely unclear, return {{"content": ""}}.'
+        '\n\nConversation:\n{ctx}'
+    ).format(msg=message, ctx=context_lines)
+
+    payload = call_json("Extract memory content.", schema_hint=schema, max_tokens=120)
+    if not payload:
+        return None
+    content = (payload.get("content") or "").strip()
+    if not content or len(content) < 5:
+        return None
+
+    from app.storage import perform_create_memory
+    from app.intent_router import IntentResult
+    return IntentResult("write", perform_create_memory(content))
 
 
 async def _handle_pending_confirmation(
@@ -682,7 +788,7 @@ async def chat(
         log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
         return response
 
-    intent = classify(request.message)
+    intent = _resolve_memory_context(request.message, window) or _resolve_send_context(request.message, window) or classify(request.message)
 
     try:
         from app.behavior import record_interaction
@@ -773,6 +879,8 @@ async def chat(
                 raw_to = args.get("to", "")
                 msg = args.get("text", "")
                 display, resolved, resolved_ok = await _resolve_wa_recipient(raw_to)
+                if resolved == "__ambiguous__":
+                    return _direct_response(mode=request.mode, text=display, provider_status="wa_ambiguous", suggested=[])
                 resolved_args = {**args, "to": resolved, "display_name": display}
                 save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
                 if resolved_ok:
@@ -930,7 +1038,7 @@ async def chat_stream(
         log_action("VERONICA", f"chat:{request.mode.value}:{pstatus}", "low", True, text[:240])
         return await emit_single(text, pstatus)
 
-    intent = classify(request.message)
+    intent = _resolve_memory_context(request.message, window) or _resolve_send_context(request.message, window) or classify(request.message)
 
     try:
         from app.behavior import record_interaction
@@ -1001,6 +1109,8 @@ async def chat_stream(
                 raw_to = args.get("to", "")
                 msg = args.get("text", "")
                 display, resolved, resolved_ok = await _resolve_wa_recipient(raw_to)
+                if resolved == "__ambiguous__":
+                    return await emit_single(display, "wa_ambiguous")
                 resolved_args = {**args, "to": resolved, "display_name": display}
                 save_pending_action(session_id, {"type": "wa_confirm", "tool": "whatsapp_send", "args": resolved_args})
                 if resolved_ok:

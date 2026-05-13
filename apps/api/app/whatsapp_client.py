@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import string
 from typing import Any
 
 import httpx
@@ -28,6 +29,7 @@ def _strip_emoji(s: str) -> str:
     return _EMOJI_RE.sub("", s).strip()
 
 HTTP_TIMEOUT = 6.0
+HTTP_TIMEOUT_CONTACTS = 25.0      # first-call cache build can take 15-20s on cold start
 HTTP_TIMEOUT_CONVERSATION = 20.0  # live WhatsApp fetch (getChats + fetchMessages) can take 10-15s
 
 
@@ -71,7 +73,7 @@ async def wa_messages(limit: int = 20) -> dict[str, Any]:
 
 async def wa_contacts(query: str = "") -> dict[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_CONTACTS) as client:
             params = {"q": query} if query else {}
             r = await client.get(f"{_wa_base()}/contacts", params=params)
             return r.json()
@@ -82,7 +84,9 @@ async def wa_contacts(query: str = "") -> dict[str, Any]:
 def _score_contact(contact_name: str, query_words: list[str]) -> int:
     """Score a contact name against query words (case-insensitive word overlap)."""
     cn = _strip_emoji(contact_name).lower()
-    cn_words = cn.split()
+    # Strip punctuation from each word so "(papa)" matches "papa"
+    cn_words = [w.strip(string.punctuation) for w in cn.split()]
+    cn_words = [w for w in cn_words if w]
     score = 0
     for qw in query_words:
         if qw in cn_words:        # exact word match
@@ -150,9 +154,25 @@ async def wa_search_contact(name: str) -> dict[str, Any]:
         key=lambda x: x[1],
         reverse=True,
     )
+
+    # Ambiguity: top-2 have equal (or near-equal) scores and both have numbers
+    if len(scored) >= 2 and abs(scored[0][1] - scored[1][1]) <= 1:
+        top_with_numbers = [
+            c for c, _ in scored[:4]
+            if (c.get("number") or c.get("id") or "").strip()
+        ]
+        if len(top_with_numbers) >= 2:
+            names = [c.get("name", "") for c in top_with_numbers[:3]]
+            return {
+                "ok": False,
+                "ambiguous": True,
+                "candidates": top_with_numbers[:3],
+                "error": f"Multiple contacts match — did you mean: {', '.join(names)}? Be more specific.",
+            }
+
     # Pick the highest-scoring contact that has a number
     for contact, _ in scored:
-        if (contact.get("number") or "").strip():
+        if (contact.get("number") or contact.get("id") or "").strip():
             return {"ok": True, "contact": contact}
 
     # No candidate has a number — return best match anyway, caller handles it
@@ -161,7 +181,7 @@ async def wa_search_contact(name: str) -> dict[str, Any]:
 
 async def wa_groups(query: str = "") -> dict[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_CONTACTS) as client:
             params = {"q": query} if query else {}
             r = await client.get(f"{_wa_base()}/groups", params=params)
             return r.json()

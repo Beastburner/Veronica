@@ -58,7 +58,9 @@ _SEMANTIC_SEARCH_RE = re.compile(
     r"what\s+did\s+i\s+(?:say|write|note|think)\s+about|"
     r"find\s+(?:memories?|notes?|anything)\s+(?:about|on|related\s+to)|"
     r"search\s+(?:my\s+)?(?:memory|memories|notes?)\s+(?:for|about)|"
-    r"do\s+i\s+have\s+(?:anything|notes?|memories?)\s+(?:about|on))\s+(.+)",
+    r"do\s+i\s+have\s+(?:anything|notes?|memories?)\s+(?:about|on)|"
+    r"what\s+(?:is|was|are|were)\s+(?:the|that|my)\s+(?:trendy\s+)?(?:meme|note|memory|thing|fact)\s+(?:about|i\s+saved|i\s+stored|you\s+remember)|"
+    r"(?:recall|remind\s+me)\s+(?:what|about)\s+)\s*(.+)",
     re.IGNORECASE,
 )
 
@@ -393,6 +395,10 @@ _WA_ACTION_KW = (
     "whatsapp to", "whatsapp message", "wa message",
     "message on whatsapp", "message via whatsapp", "message over whatsapp",
     "text on whatsapp", "text via whatsapp",
+    "send this on whatsapp", "send that on whatsapp", "send on whatsapp",
+    "send this to", "send that to", "forward on whatsapp", "forward this on whatsapp",
+    "whatsapp him", "whatsapp her", "whatsapp them", "whatsapp pranav",
+    "drop a whatsapp", "drop a message on whatsapp", "ping on whatsapp",
 )
 
 _CALENDAR_ACTION_KW = (
@@ -451,7 +457,9 @@ def _llm_action_intent(message: str) -> IntentResult | None:
         sender = (_cfg.sender_name or "Parth").split()[0]  # first name only
         schema = (
             'Schema: {"action": "send_whatsapp" | "none", "to": string, "text": string}. '
-            'Extract the recipient name or phone number (to). '
+            'Extract the recipient name or phone number into "to". '
+            'If the recipient is referred to as "him/her/them/he/she/they" without a name, use "__last__" as "to". '
+            'If "this/that" refers to content from a previous conversation turn, re-use it as the message text. '
             f'Write the WhatsApp message text as if {sender} is typing it directly — first person, sent TO the recipient. '
             'Rules: '
             '1. NEVER say this message is automated, sent by AI, or "from Veronica the assistant". '
@@ -1065,6 +1073,94 @@ def _tool_intent(message: str) -> IntentResult | None:
     return None
 
 
+# ── LLM tool fallback (catches natural-language commands that skip regex) ────
+
+_TOOL_FALLBACK_HINT = frozenset({
+    "send", "message", "email", "mail", "whatsapp", "wa", "ping",
+    "play", "pause", "resume", "music", "spotify", "song", "track",
+    "weather", "temperature", "forecast",
+    "search", "google", "look up", "find",
+    "news", "headline",
+    "commit", "github", "push",
+    "timer", "pomodoro", "focus",
+    "stats", "cpu", "ram", "disk",
+    "habit",
+    "calendar", "meeting", "event",
+    "clipboard", "clip",
+    "plan", "goal",
+})
+
+# Questions that are clearly Q&A, not action commands
+_QA_PATTERN = re.compile(
+    r"^(?:what|why|how|when|where|who|is|are|can|could|does|do|will|would|should|tell\s+me)\b",
+    re.IGNORECASE,
+)
+
+
+def _llm_tool_fallback(message: str) -> IntentResult | None:
+    """
+    Last-resort: ask the LLM to detect tool invocations that the regex handlers missed.
+    Only runs for messages that contain action-intent words and aren't pure Q&A.
+    """
+    lowered = message.lower()
+    if not any(word in lowered for word in _TOOL_FALLBACK_HINT):
+        return None
+    # Pure questions are almost never tool invocations
+    if _QA_PATTERN.match(message.strip()) and "?" in message and len(message.split()) <= 10:
+        return None
+
+    schema = (
+        'Classify this user command as a tool invocation or chat. '
+        'Schema: {"tool": string|null, "args": object, "confirm": bool}. '
+        'Available tools: '
+        '"whatsapp_send"(to,text) — send WhatsApp; '
+        '"gmail_send"(to,subject,body) — send email; '
+        '"spotify_play"(query) — play music; '
+        '"spotify_toggle"() — play/pause; '
+        '"spotify_skip_next"() — next track; '
+        '"get_weather"(city) — current weather; '
+        '"web_search"(query) — search web; '
+        '"news_digest"() — top headlines; '
+        '"news_topic"(topic) — topic news; '
+        '"pomodoro_start"(label) — start focus timer; '
+        '"system_stats"() — CPU/RAM/disk. '
+        'Return {"tool":null,"args":{},"confirm":false} for chat/questions. '
+        'Return {"tool":null} if required args are missing. '
+        'Set confirm=true for whatsapp_send and gmail_send. '
+        'NEVER invent recipients or content not stated in the message.'
+    )
+    payload = call_json(f"User: {message!r}", schema_hint=schema, max_tokens=150)
+    if not payload or not payload.get("tool"):
+        return None
+
+    tool = (payload.get("tool") or "").strip()
+    args = payload.get("args") or {}
+    confirm = bool(payload.get("confirm", False))
+
+    # Minimal validation
+    if tool == "whatsapp_send" and (not args.get("to") or not args.get("text")):
+        return None
+    if tool == "gmail_send" and (not args.get("to") or not args.get("subject")):
+        return None
+    if tool == "get_weather" and not args.get("city"):
+        return None
+    if tool == "spotify_play" and not args.get("query"):
+        return None
+    if tool == "web_search" and not args.get("query"):
+        return None
+    if tool == "news_topic" and not args.get("topic"):
+        return None
+
+    if tool not in {
+        "whatsapp_send", "gmail_send", "spotify_play", "spotify_toggle",
+        "spotify_skip_next", "get_weather", "web_search", "news_digest",
+        "news_topic", "pomodoro_start", "system_stats",
+    }:
+        return None
+
+    return IntentResult("tool", {"tool": tool, "args": args, "confirm_first": confirm})
+
+
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
@@ -1081,7 +1177,7 @@ def _strip_activation_prefix(message: str) -> str:
 
 def classify(message: str) -> IntentResult:
     stripped = _strip_activation_prefix(message)
-    for handler in (_social_intent, _write_intent_regex, _read_intent, _tool_intent, _llm_action_intent, _protocol_intent, _llm_write_intent):
+    for handler in (_social_intent, _write_intent_regex, _read_intent, _tool_intent, _llm_action_intent, _protocol_intent, _llm_write_intent, _llm_tool_fallback):
         try:
             result = handler(stripped)
         except Exception:
